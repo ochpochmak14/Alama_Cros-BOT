@@ -25,6 +25,42 @@ def start(message):
     
     bot.send_message(message.chat.id, f'<b>Выберите ресторан из списка или введите название вручную</b>', parse_mode='html', reply_markup=markup)
 
+@bot.message_handler(content_types=['text'])
+def handle_text(message):
+    from normalize_text import normalize_restaurant
+    
+    text = message.text.strip()
+    restaurant = normalize_restaurant(text)
+
+    if restaurant:
+        ask_for_dish(message.chat.id, restaurant) 
+
+    else:
+        bot.send_message(message.chat.id, "Выберите ресторан!")
+
+
+def ask_for_dish(chat_id, restaurant, message_id=None):
+    markup = types.InlineKeyboardMarkup()
+    back_btn = types.InlineKeyboardButton("⬅️ Назад", callback_data='back_1')
+    markup.add(back_btn)
+
+    if message_id:  
+        bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=f"Введите название блюда из <b>{restaurant}</b>",
+            parse_mode='HTML',
+            reply_markup=markup
+        )
+    else: 
+        bot.send_message(
+            chat_id,
+            f"Введите название блюда из <b>{restaurant}</b>",
+            parse_mode='HTML',
+            reply_markup=markup
+        )
+
+
 @bot.callback_query_handler(func=lambda callback: True)
 def callback_message(callback):
     bot.answer_callback_query(callback.id)
@@ -32,18 +68,8 @@ def callback_message(callback):
     if callback.data in ['mcdonalds', 'kfc', 'burgerk', 'tanuki', 'starbucks']:
         from renaming_1 import rename
         dt2 = rename(callback)
+        ask_for_dish(callback.message.chat.id, dt2, callback.message.message_id)
 
-        markup = types.InlineKeyboardMarkup()
-        back_btn = types.InlineKeyboardButton("⬅️ Назад", callback_data='back_1')
-        markup.add(back_btn)
-
-        bot.edit_message_text(
-            chat_id=callback.message.chat.id,
-            message_id=callback.message.message_id,
-            text=f"Введите название блюда из <b>{dt2}</b>",
-            parse_mode='HTML',
-            reply_markup=markup
-        )
 
     elif callback.data == 'back_1':
         markup = types.InlineKeyboardMarkup()
@@ -57,13 +83,13 @@ def callback_message(callback):
         bot.edit_message_text(
             chat_id=callback.message.chat.id,
             message_id=callback.message.message_id,
-            text='<b>Выберите ресторан из списка или введите название вручную</b>',
+            text='Выберите ресторан из списка или введите название вручную',
             parse_mode='HTML',
             reply_markup=markup
         )
-
     else:
         bot.send_message(callback.message.chat.id, "Выберите ресторан!")
+
 
 
     
