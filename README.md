@@ -8,6 +8,8 @@
 <img width="120" height="34" alt="изображение" src="https://github.com/user-attachments/assets/2855a827-3797-4da5-959b-a432c6c905dd" />
 
 3.Запустить команду **python main.py** через консоль
+
+
 <img width="216" height="43" alt="изображение" src="https://github.com/user-attachments/assets/422ce5dd-3b7d-4979-9134-001d285e0d90" />
 
 
