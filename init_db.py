@@ -49,7 +49,7 @@ def init_db():
 ]
 
 
-    conn = sqlite3.connect("alamacros.sql")
+    conn = sqlite3.connect("alamacros.db")
     cur = conn.cursor()
 
     cur.execute('''
