@@ -91,7 +91,6 @@ def callback_message(callback):
         )
     elif "dish|" in callback.data:
         _, restaurant_name, dish_name = callback.data.split("|")
-        print(restaurant_name)
         conn = sqlite3.connect("alamacros.db")
         cur = conn.cursor()
 
