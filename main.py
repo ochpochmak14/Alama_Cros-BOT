@@ -23,7 +23,7 @@ def start(message):
     
     markup.add(mcdonald_btn, kfc_btn, burgerk_btn, tanuki_btn, starbucks_btn)
     
-    bot.send_message(message.chat.id, f'<b>Выберите ресторан из списка или введите название вручную</b>', parse_mode='html', reply_markup=markup)
+    bot.send_message(message.chat.id, f'Выберите ресторан из списка или введите название вручную', parse_mode='html', reply_markup=markup)
 
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
