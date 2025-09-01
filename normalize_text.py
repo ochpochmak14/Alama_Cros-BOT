@@ -1,7 +1,7 @@
 from rapidfuzz import process
 
 restaurants = [
-    "McDonald’s", "Макдональдс", "Макдак",
+    "McDonald's", "Макдональдс", "Макдак",
     "KFC", "КФС",
     "Burger King", "Бургер Кинг", "БК",
     "Tanuki", "Тануки",
@@ -9,9 +9,9 @@ restaurants = [
 ]
 
 canonical = {
-    "mcdonald’s": "McDonald’s",
-    "макдональдс": "McDonald’s",
-    "макдак": "McDonald’s",
+    "mcdonald's": "McDonald's",
+    "макдональдс": "McDonald's",
+    "макдак": "McDonald's",
     "kfc": "KFC",
     "кфс": "KFC",
     "burger king": "Burger King",
@@ -27,10 +27,10 @@ canonical = {
 def normalize_restaurant(name: str):
     name = name.strip().lower()
     best_match, score, _ = process.extractOne(name, restaurants)
-    
+
     if name in canonical:
         return canonical[name]
-    
+
     if score >= 70:
         return canonical[best_match.lower()]
     return None

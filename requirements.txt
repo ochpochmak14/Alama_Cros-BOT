@@ -1,1 +1,2 @@
 1. pip install pyTelegramBotAPI
+2. pip install pandas

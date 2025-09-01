@@ -1,8 +1,6 @@
-ls1 = ['mcdonalds', 'kfc', 'burgerk', 'tanuki', 'starbucks']
-
 def rename(callback):
     mapping = {
-        'mcdonalds': 'McDonald’s',
+        'mcdonalds': "McDonald's",
         'kfc': 'KFC',
         'burgerk': 'Burger King',
         'tanuki': 'Tanuki',
