@@ -21,7 +21,10 @@ canonical = {
     "тануки": "Tanuki",
     "starbucks": "Starbucks",
     "старбакс": "Starbucks",
-    "старбак": "Starbucks"
+    "старбак": "Starbucks",
+    "tomyumbar": "TomYumBar",
+    "томямбар": "TomYumBar",
+    "Томямбар": "TomYumBar"
 }
 
 def normalize_restaurant(name: str):

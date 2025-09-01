@@ -16,7 +16,7 @@ def start(message):
     kfc_btn = types.InlineKeyboardButton("KFC", callback_data='kfc')
     burgerk_btn = types.InlineKeyboardButton("Burger King", callback_data='burgerk')
     tanuki_btn = types.InlineKeyboardButton("Tanuki", callback_data='tanuki')
-    starbucks_btn = types.InlineKeyboardButton("Starbucks", callback_data='starbucks')
+    starbucks_btn = types.InlineKeyboardButton("TomYumBar", callback_data='tomyumbar')
 
     markup.add(mcdonald_btn, kfc_btn, burgerk_btn, tanuki_btn, starbucks_btn)
 
@@ -68,7 +68,7 @@ def ask_for_dish(chat_id, restaurant, message_id=None):
 def callback_message(callback):
     bot.answer_callback_query(callback.id)
 
-    if callback.data in ['mcdonalds', 'kfc', 'burgerk', 'tanuki', 'starbucks']:
+    if callback.data in ['mcdonalds', 'kfc', 'burgerk', 'tanuki', 'tomyumbar']:
         from renaming_1 import rename
         dt2 = rename(callback)
         ask_for_dish(callback.message.chat.id, dt2, callback.message.message_id)
@@ -79,7 +79,7 @@ def callback_message(callback):
         kfc_btn = types.InlineKeyboardButton("KFC", callback_data='kfc')
         burgerk_btn = types.InlineKeyboardButton("Burger King", callback_data='burgerk')
         tanuki_btn = types.InlineKeyboardButton("Tanuki", callback_data='tanuki')
-        starbucks_btn = types.InlineKeyboardButton("Starbucks", callback_data='starbucks')
+        starbucks_btn = types.InlineKeyboardButton("TomYumBar", callback_data='tomyumbar')
         markup.add(mcdonald_btn, kfc_btn, burgerk_btn, tanuki_btn, starbucks_btn)
 
         bot.edit_message_text(
