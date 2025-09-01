@@ -9,7 +9,7 @@ bot = telebot.TeleBot('TOKEN')
 @bot.message_handler(commands=['start'])
 def start(message):
     from init_db import init_db
-    init_db()
+    # init_db()
 
     markup = types.InlineKeyboardMarkup()
     mcdonald_btn = types.InlineKeyboardButton("McDonald's", callback_data='mcdonalds')
