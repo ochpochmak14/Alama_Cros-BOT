@@ -36,7 +36,7 @@ def handle_text(message):
     if restaurant:
         ask_for_dish(message.chat.id, restaurant)
     else:
-        bot.send_message(message.chat.id, "Выберите ресторан!")
+        bot.send_message(message.chat.id, "Этого ресторана нет в базе. Напишите его название в разделе предложений, и мы добавим его в будущем.")
         start(message)
 
 
