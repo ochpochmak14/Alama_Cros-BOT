@@ -6,6 +6,8 @@ bot = telebot.TeleBot('TOKEN')
 
 
 
+CARTS = {}
+
 @bot.message_handler(commands=['start'])
 def start(message):
     from init_db import init_db
@@ -17,8 +19,11 @@ def start(message):
     burgerk_btn = types.InlineKeyboardButton("Burger King", callback_data='burgerk')
     tanuki_btn = types.InlineKeyboardButton("Tanuki", callback_data='tanuki')
     starbucks_btn = types.InlineKeyboardButton("TomYumBar", callback_data='tomyumbar')
-
+    cart = types.InlineKeyboardButton("🛒 Показать корзину", callback_data='show_cart')
+    
+    
     markup.add(mcdonald_btn, kfc_btn, burgerk_btn, tanuki_btn, starbucks_btn)
+    markup.row(cart)
 
     bot.send_message(message.chat.id,
                      'Выберите ресторан из списка или введите название вручную',
@@ -102,7 +107,9 @@ def callback_message(callback):
 
         markup = types.InlineKeyboardMarkup()
         back_btn = types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data='back_1')
+        add_dish_to_cart = types.InlineKeyboardButton("🛒 Добавить блюдо в корзину.", callback_data='add_dish_to_cart')
         markup.add(back_btn)
+        markup.add(add_dish_to_cart)
 
         if row:
             weight, kcal, protein, fat, carbs = row
@@ -123,7 +130,29 @@ def callback_message(callback):
 
         cur.close()
         conn.close()
+        
+        
+        
+        
+@bot.callback_query_handler(func=lambda callback: True)
+def callback_handler_2(callback):
+    bot.answer_callback_query(callback.id)
+    
+    
+    user_id = callback.from_user.id
+    data = callback.data
+    
+    if data == "show_cart":
+        pass
+    
+    if data == "add_dish_to_cart":
+        pass
+    
+    
 
+
+
+    
 
 def dish_handling_func_1(message, restaurant):
     from rapidfuzz import process, fuzz
