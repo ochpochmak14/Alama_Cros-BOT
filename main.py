@@ -1,12 +1,22 @@
 import telebot
 from telebot import types
 import sqlite3
+import psycopg2
 
-bot = telebot.TeleBot('TOKEN')
+conn = psycopg2.connect(
+    dbname="alamacros",
+    user="postgres",
+    password="password",
+    host="127.0.0.1",
+)
+cursor = conn.cursor()
 
 
 
-CARTS = {}
+bot = telebot.TeleBot('Token')
+
+
+
 
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -43,6 +53,82 @@ def handle_text(message):
     else:
         bot.send_message(message.chat.id, "Этого ресторана нет в базе. Напишите его название в разделе предложений, и мы добавим его в будущем.")
         start(message)
+
+
+def add_to_cart(user_id, dish_name):
+    
+    cursor.execute(
+        "SELECT weight, kcal, protein, fat, carbs FROM dishes WHERE dish = ?",
+        (dish_name,)
+    )
+    dish = cursor.fetchone()
+
+    if not dish:
+        return "❌ Такого блюда нет в базе!"
+
+    weight, kcal, protein, fat, carbs = dish
+
+   
+    cursor.execute(
+        "SELECT quantity FROM cart_items WHERE user_id = ? AND dish_name = ?",
+        (user_id, dish_name)
+    )
+    result = cursor.fetchone()
+
+    if result:
+        
+        cursor.execute("""
+            UPDATE cart_items 
+            SET quantity = quantity + 1,
+                weight = weight + ?,
+                kcal = kcal + ?,
+                protein = protein + ?,
+                fat = fat + ?,
+                carbs = carbs + ?
+            WHERE user_id = ? AND dish_name = ?
+        """, (weight, kcal, protein, fat, carbs, user_id, dish_name))
+    else:
+    
+        cursor.execute("""
+            INSERT INTO cart_items (user_id, dish_name, quantity, weight, kcal, protein, fat, carbs) 
+            VALUES (?, ?, 1, ?, ?, ?, ?, ?)
+        """, (user_id, dish_name, weight, kcal, protein, fat, carbs))
+
+    conn.commit()
+    return "✅ Блюдо добавлено в корзину"
+
+
+
+
+def get_cart(user_id):
+    cursor.execute("""
+        SELECT d.name, c.quantity, d.calories, d.proteins, d.fats, d.carbs
+        FROM cart_items c
+        JOIN dishes d ON c.dish_id = d.id
+        WHERE c.user_id=%s
+    """, (user_id,))
+    return cursor.fetchall()
+
+
+def clear_cart(user_id):
+    cursor.execute("DELETE FROM cart_items WHERE user_id=%s", (user_id,))
+    conn.commit()
+
+
+def get_cart_totals(user_id):
+    cursor.execute("""
+        SELECT 
+            COALESCE(SUM(d.calories * c.quantity),0),
+            COALESCE(SUM(d.proteins * c.quantity),0),
+            COALESCE(SUM(d.fats * c.quantity),0),
+            COALESCE(SUM(d.carbs * c.quantity),0)
+        FROM cart_items c
+        JOIN dishes d ON c.dish_id = d.id
+        WHERE c.user_id=%s
+    """, (user_id,))
+    return cursor.fetchone()
+
+
 
 
 def ask_for_dish(chat_id, restaurant, message_id=None):
@@ -85,7 +171,10 @@ def callback_message(callback):
         burgerk_btn = types.InlineKeyboardButton("Burger King", callback_data='burgerk')
         tanuki_btn = types.InlineKeyboardButton("Tanuki", callback_data='tanuki')
         starbucks_btn = types.InlineKeyboardButton("TomYumBar", callback_data='tomyumbar')
+        cart = types.InlineKeyboardButton("🛒 Показать корзину", callback_data='show_cart')
+        
         markup.add(mcdonald_btn, kfc_btn, burgerk_btn, tanuki_btn, starbucks_btn)
+        markup.row(cart)
 
         bot.edit_message_text(
             chat_id=callback.message.chat.id,
@@ -107,7 +196,7 @@ def callback_message(callback):
 
         markup = types.InlineKeyboardMarkup()
         back_btn = types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data='back_1')
-        add_dish_to_cart = types.InlineKeyboardButton("🛒 Добавить блюдо в корзину.", callback_data='add_dish_to_cart')
+        add_dish_to_cart = types.InlineKeyboardButton("🛒 Добавить блюдо в корзину.", callback_data=f"add_dish_to_cart|{restaurant_name}|{dish_name}")
         markup.add(back_btn)
         markup.add(add_dish_to_cart)
 
@@ -143,10 +232,17 @@ def callback_handler_2(callback):
     data = callback.data
     
     if data == "show_cart":
-        pass
-    
-    if data == "add_dish_to_cart":
-        pass
+        ls = get_cart(callback.from_user.id)
+        bot_answer = ""
+        if ls:
+            for product, qty in ls:
+                bot_answer += f"{product} - {qty} шт."
+            bot.send_message(callback.message.chat.id, bot_answer)
+        else:
+            bot.send_message(callback.message.chat.id, "Ваша корзина пуста")
+    if data.startswith("add_dish_to_cart|"):
+        _, restaurant_name, dish_name = data.split("|", 2)
+        add_to_cart(callback.from_user.id, dish_name)
     
     
 
