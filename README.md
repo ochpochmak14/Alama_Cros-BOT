@@ -46,10 +46,10 @@ CREATE TABLE dishes (
 );
 ```
 
-4.Открыть SQL shell И вписать
+4.Открыть **SQL shell** И вписать
 ```\copy dishes FROM 'ПУТЬ К ФАЙЛУ .csv' DELIMITER ',' CSV HEADER ENCODING 'UTF8';```
 
-5.Вернуться в Query Tool и вписать
+5.Вернуться в **Query Tool** и вписать
 ```
 CREATE TABLE dishes_clean (
     restaurant       TEXT,
