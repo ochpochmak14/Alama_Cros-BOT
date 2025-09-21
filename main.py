@@ -3,43 +3,83 @@ from telebot import types
 import sqlite3
 import psycopg2
 
-conn = psycopg2.connect(
-    dbname="alamacros",
-    user="postgres",
-    password="password",
-    host="127.0.0.1",
-)
-cursor = conn.cursor()
+
+bot = telebot.TeleBot('TOKEN')
 
 
 
-bot = telebot.TeleBot('Token')
-
+def get_conn():
+    return psycopg2.connect(
+        dbname="alamacros",
+        user="postgres",
+        password="ПАРОЛЬ",
+        host="127.0.0.1",
+        port="5432"
+    )
 
 
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    from init_db import init_db
-    # init_db()
+    bot.clear_step_handler_by_chat_id(message.chat.id)
 
-    markup = types.InlineKeyboardMarkup()
+    reply_markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    menu_btn = types.KeyboardButton("📋 Меню")
+    cart_btn = types.KeyboardButton("🛒 Показать корзину")
+    reply_markup.add(menu_btn, cart_btn)
+
+    
+    inline_markup = types.InlineKeyboardMarkup()
     mcdonald_btn = types.InlineKeyboardButton("McDonald's", callback_data='mcdonalds')
     kfc_btn = types.InlineKeyboardButton("KFC", callback_data='kfc')
     burgerk_btn = types.InlineKeyboardButton("Burger King", callback_data='burgerk')
     tanuki_btn = types.InlineKeyboardButton("Tanuki", callback_data='tanuki')
     starbucks_btn = types.InlineKeyboardButton("TomYumBar", callback_data='tomyumbar')
     cart = types.InlineKeyboardButton("🛒 Показать корзину", callback_data='show_cart')
+
+    inline_markup.add(mcdonald_btn, kfc_btn, burgerk_btn, tanuki_btn, starbucks_btn)
+    inline_markup.row(cart)
+
+   
+    bot.send_message(
+        message.chat.id,
+        'Выберите ресторан из списка или введите название вручную',
+        parse_mode='HTML',
+        reply_markup=inline_markup
+    )
+
+    bot.send_message(
+        message.chat.id,
+        "Используй кнопки ниже для быстрого доступа 👇",
+        reply_markup=reply_markup
+    )
+
+
+@bot.message_handler(func=lambda message: message.text == "📋 Меню")
+def show_menu(message):
+    start(message)
     
     
-    markup.add(mcdonald_btn, kfc_btn, burgerk_btn, tanuki_btn, starbucks_btn)
-    markup.row(cart)
+@bot.message_handler(func=lambda message: message.text == "🛒 Показать корзину")
+def show_menu(message):
+    user_id = message.from_user.id
 
-    bot.send_message(message.chat.id,
-                     'Выберите ресторан из списка или введите название вручную',
-                     parse_mode='html',
-                     reply_markup=markup)
-
+    ls = list(get_cart(user_id))
+    if not ls:
+        bot.send_message(message.chat.id, "Ваша корзина пуста")
+    else:
+        bot_answer = "\n".join(f"{restaurant} — {product} - {qty} шт."
+                                   for restaurant, product, qty in ls)
+        bot_answer += "\n\n"
+            
+        res = get_cart_totals(message.from_user.id)
+        kcal, protein, fat, carbs = res
+        bot_answer += f"""Всего:
+            Каллории - {kcal} ккал.
+            Белки - {protein} г.
+            Жиры - {fat} г.
+            Углеводы - {carbs} г. """
+        bot.send_message(message.chat.id, bot_answer)
 
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
@@ -50,83 +90,96 @@ def handle_text(message):
 
     if restaurant:
         ask_for_dish(message.chat.id, restaurant)
+    if text == "📋 Меню":
+        pass
     else:
         bot.send_message(message.chat.id, "Этого ресторана нет в базе. Напишите его название в разделе предложений, и мы добавим его в будущем.")
         start(message)
 
 
-def add_to_cart(user_id, dish_name):
-    
-    cursor.execute(
-        "SELECT weight, kcal, protein, fat, carbs FROM dishes WHERE dish = ?",
-        (dish_name,)
-    )
-    dish = cursor.fetchone()
+def add_to_cart(user_id, dish_name, restaurant):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT weight, kcal, protein, fat, carbs 
+        FROM dishes 
+        WHERE dish = %s AND restaurant = %s
+    """, (dish_name, restaurant))
+    dish = cur.fetchone()
 
     if not dish:
-        return "❌ Такого блюда нет в базе!"
+        cur.close()
+        return "❌ Такого блюда в этом ресторане нет!"
 
     weight, kcal, protein, fat, carbs = dish
 
-   
-    cursor.execute(
-        "SELECT quantity FROM cart_items WHERE user_id = ? AND dish_name = ?",
-        (user_id, dish_name)
-    )
-    result = cursor.fetchone()
+    cur.execute("""
+        SELECT id, quantity 
+        FROM cart_items 
+        WHERE user_id = %s AND dish = %s AND restaurant = %s
+    """, (user_id, dish_name, restaurant))
+    existing = cur.fetchone()
 
-    if result:
-        
-        cursor.execute("""
+    if existing:
+        cur.execute("""
             UPDATE cart_items 
-            SET quantity = quantity + 1,
-                weight = weight + ?,
-                kcal = kcal + ?,
-                protein = protein + ?,
-                fat = fat + ?,
-                carbs = carbs + ?
-            WHERE user_id = ? AND dish_name = ?
-        """, (weight, kcal, protein, fat, carbs, user_id, dish_name))
+            SET quantity = quantity + 1 
+            WHERE id = %s
+        """, (existing[0],))
     else:
-    
-        cursor.execute("""
-            INSERT INTO cart_items (user_id, dish_name, quantity, weight, kcal, protein, fat, carbs) 
-            VALUES (?, ?, 1, ?, ?, ?, ?, ?)
-        """, (user_id, dish_name, weight, kcal, protein, fat, carbs))
+        cur.execute("""
+            INSERT INTO cart_items(user_id, dish, restaurant, weight, kcal, protein, fat, carbs, quantity)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1)
+        """, (user_id, dish_name, restaurant, weight, kcal, protein, fat, carbs))
 
     conn.commit()
-    return "✅ Блюдо добавлено в корзину"
+    cur.close()
+
+    return f"✅ {dish_name} ({restaurant}) добавлен в корзину!"
+
+
 
 
 
 
 def get_cart(user_id):
-    cursor.execute("""
-        SELECT d.name, c.quantity, d.calories, d.proteins, d.fats, d.carbs
-        FROM cart_items c
-        JOIN dishes d ON c.dish_id = d.id
-        WHERE c.user_id=%s
-    """, (user_id,))
-    return cursor.fetchall()
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT restaurant, dish, quantity FROM cart_items WHERE user_id = %s", (user_id,))
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
+
 
 
 def clear_cart(user_id):
-    cursor.execute("DELETE FROM cart_items WHERE user_id=%s", (user_id,))
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM cart_items WHERE user_id = %s", (user_id,))
     conn.commit()
+    cursor.close()
+    conn.close()
 
 
 def get_cart_totals(user_id):
+    conn = get_conn()
+    cursor = conn.cursor()
     cursor.execute("""
         SELECT 
-            COALESCE(SUM(d.calories * c.quantity),0),
-            COALESCE(SUM(d.proteins * c.quantity),0),
-            COALESCE(SUM(d.fats * c.quantity),0),
-            COALESCE(SUM(d.carbs * c.quantity),0)
+            COALESCE(SUM(c.kcal),0),
+            COALESCE(SUM(c.protein),0),
+            COALESCE(SUM(c.fat),0),
+            COALESCE(SUM(c.carbs),0)
         FROM cart_items c
-        JOIN dishes d ON c.dish_id = d.id
-        WHERE c.user_id=%s
+        WHERE c.user_id = %s
     """, (user_id,))
-    return cursor.fetchone()
+    result = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return result
+
 
 
 
@@ -158,23 +211,24 @@ def ask_for_dish(chat_id, restaurant, message_id=None):
 @bot.callback_query_handler(func=lambda callback: True)
 def callback_message(callback):
     bot.answer_callback_query(callback.id)
+    user_id = callback.from_user.id
+    data = callback.data
 
-    if callback.data in ['mcdonalds', 'kfc', 'burgerk', 'tanuki', 'tomyumbar']:
+    if data in ['mcdonalds', 'kfc', 'burgerk', 'tanuki', 'tomyumbar']:
         from renaming_1 import rename
         dt2 = rename(callback)
         ask_for_dish(callback.message.chat.id, dt2, callback.message.message_id)
 
-    elif callback.data == 'back_1':
+    elif data == 'back_1':
         markup = types.InlineKeyboardMarkup()
         mcdonald_btn = types.InlineKeyboardButton("McDonald's", callback_data='mcdonalds')
         kfc_btn = types.InlineKeyboardButton("KFC", callback_data='kfc')
         burgerk_btn = types.InlineKeyboardButton("Burger King", callback_data='burgerk')
         tanuki_btn = types.InlineKeyboardButton("Tanuki", callback_data='tanuki')
         starbucks_btn = types.InlineKeyboardButton("TomYumBar", callback_data='tomyumbar')
-        cart = types.InlineKeyboardButton("🛒 Показать корзину", callback_data='show_cart')
-        
+        cart_btn = types.InlineKeyboardButton("🛒 Показать корзину", callback_data='show_cart')
         markup.add(mcdonald_btn, kfc_btn, burgerk_btn, tanuki_btn, starbucks_btn)
-        markup.row(cart)
+        markup.row(cart_btn)
 
         bot.edit_message_text(
             chat_id=callback.message.chat.id,
@@ -183,22 +237,28 @@ def callback_message(callback):
             parse_mode='HTML',
             reply_markup=markup
         )
-    elif "dish|" in callback.data:
-        _, restaurant_name, dish_name = callback.data.split("|")
-        conn = sqlite3.connect("alamacros.db")
-        cur = conn.cursor()
 
+    elif data.startswith("dish|"):
+        _, restaurant_name, dish_name = data.split("|")
+
+        conn = get_conn()
+        cur = conn.cursor()
         cur.execute(
-            "SELECT weight, kcal, protein, fat, carbs FROM dishes WHERE restaurant = ? AND dish = ?",
+            "SELECT weight, kcal, protein, fat, carbs FROM dishes WHERE restaurant = %s AND dish = %s",
             (restaurant_name, dish_name)
         )
         row = cur.fetchone()
+        cur.close()
+        conn.close()
 
         markup = types.InlineKeyboardMarkup()
         back_btn = types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data='back_1')
-        add_dish_to_cart = types.InlineKeyboardButton("🛒 Добавить блюдо в корзину.", callback_data=f"add_dish_to_cart|{restaurant_name}|{dish_name}")
+        add_btn = types.InlineKeyboardButton(
+            "🛒 Добавить блюдо в корзину.",
+            callback_data=f"add_dish_to_cart|{restaurant_name}|{dish_name}"
+        )
         markup.add(back_btn)
-        markup.add(add_dish_to_cart)
+        markup.row(add_btn)
 
         if row:
             weight, kcal, protein, fat, carbs = row
@@ -217,36 +277,35 @@ def callback_message(callback):
         else:
             bot.send_message(callback.message.chat.id, "Блюдо не найдено в этом ресторане.", reply_markup=markup)
 
-        cur.close()
-        conn.close()
-        
-        
-        
-        
-@bot.callback_query_handler(func=lambda callback: True)
-def callback_handler_2(callback):
-    bot.answer_callback_query(callback.id)
-    
-    
-    user_id = callback.from_user.id
-    data = callback.data
-    
-    if data == "show_cart":
-        ls = get_cart(callback.from_user.id)
-        bot_answer = ""
-        if ls:
-            for product, qty in ls:
-                bot_answer += f"{product} - {qty} шт."
-            bot.send_message(callback.message.chat.id, bot_answer)
-        else:
+    elif data == "show_cart":
+        ls = list(get_cart(user_id))
+        if not ls:
             bot.send_message(callback.message.chat.id, "Ваша корзина пуста")
-    if data.startswith("add_dish_to_cart|"):
+        else:
+            bot_answer = "\n".join(f"{restaurant} — {product} - {qty} шт."
+                                   for restaurant, product, qty in ls)
+            bot_answer += "\n\n"
+            
+            res = get_cart_totals(callback.from_user.id)
+            kcal, protein, fat, carbs = res
+            bot_answer += f"""Всего:
+            Каллории - {kcal} ккал.
+            Белки - {protein} г.
+            Жиры - {fat} г.
+            Углеводы - {carbs} г. """
+            bot.send_message(callback.message.chat.id, bot_answer)
+
+    elif data.startswith("add_dish_to_cart|"):
         _, restaurant_name, dish_name = data.split("|", 2)
-        add_to_cart(callback.from_user.id, dish_name)
-    
-    
+        add_to_cart(user_id, dish_name, restaurant_name)
+        bot.send_message(
+            callback.message.chat.id,
+            f"✅ Блюдо '{dish_name}' из {restaurant_name} добавлено в корзину"
+        )
 
 
+        
+    
 
     
 
