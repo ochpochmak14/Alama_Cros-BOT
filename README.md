@@ -100,6 +100,20 @@ FROM dishes;```
 DROP TABLE dishes;
 ALTER TABLE dishes_clean RENAME TO dishes;
 ```
+```
+CREATE TABLE cart_items (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    dish VARCHAR(255) NOT NULL,
+    restaurant VARCHAR(255) NOT NULL,
+    weight NUMERIC,
+    kcal NUMERIC,
+    protein NUMERIC,
+    fat NUMERIC,
+    carbs NUMERIC,
+    quantity INT DEFAULT 1
+);
+```
 
 6.<img width="287" height="150" alt="изображение" src="https://github.com/user-attachments/assets/f04dfb76-2891-43f7-be8a-eb324bbb6155" />
 
