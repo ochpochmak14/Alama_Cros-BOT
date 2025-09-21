@@ -20,6 +20,7 @@
 * POSTGRESQL SETUP
 
 1.Скачать **PgAdmin**
+
 2.Зарегистрировать сервер в pgAdmin и создать свою Database 
 
 3.Далее открыть **Query Tool** <img width="105" height="90" alt="изображение" src="https://github.com/user-attachments/assets/a12621a6-91f7-429c-a114-1872ba285f4b" />
