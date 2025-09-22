@@ -114,8 +114,11 @@ CREATE TABLE cart_items (
     quantity INT DEFAULT 1
 );
 ```
-
-6.<img width="287" height="150" alt="изображение" src="https://github.com/user-attachments/assets/f04dfb76-2891-43f7-be8a-eb324bbb6155" />
+6.Опять в **Query Tool** прописать 
+```
+ALTER TABLE dishes ADD COLUMN id SERIAL PRIMARY KEY;
+```
+7.<img width="287" height="150" alt="изображение" src="https://github.com/user-attachments/assets/f04dfb76-2891-43f7-be8a-eb324bbb6155" />
 
 **dbname=название своей database**
 
