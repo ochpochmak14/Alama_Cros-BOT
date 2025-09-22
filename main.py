@@ -12,7 +12,7 @@ def get_conn():
     return psycopg2.connect(
         dbname="alamacros",
         user="postgres",
-        password="ПАРОЛЬ",
+        password="pass",
         host="127.0.0.1",
         port="5432"
     )
@@ -50,7 +50,7 @@ def start(message):
 
     bot.send_message(
         message.chat.id,
-        "Используй кнопки ниже для быстрого доступа 👇",
+        "Используйте кнопки ниже для быстрого доступа 👇",
         reply_markup=reply_markup
     )
 
@@ -68,8 +68,8 @@ def show_menu(message):
     if not ls:
         bot.send_message(message.chat.id, "Ваша корзина пуста")
     else:
-        bot_answer = "\n".join(f"{restaurant} — {product} - {qty} шт."
-                                   for restaurant, product, qty in ls)
+        bot_answer = "\n".join(f"{id}.{restaurant} — {product} - {qty} шт."
+                                   for id, restaurant, product, qty in ls)
         bot_answer += "\n\n"
             
         res = get_cart_totals(message.from_user.id)
@@ -146,7 +146,7 @@ def add_to_cart(user_id, dish_name, restaurant):
 def get_cart(user_id):
     conn = get_conn()
     cursor = conn.cursor()
-    cursor.execute("SELECT restaurant, dish, quantity FROM cart_items WHERE user_id = %s", (user_id,))
+    cursor.execute("SELECT id, restaurant, dish, quantity FROM cart_items WHERE user_id = %s ORDER BY id", (user_id,))
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -239,15 +239,17 @@ def callback_message(callback):
         )
 
     elif data.startswith("dish|"):
-        _, restaurant_name, dish_name = data.split("|")
+        print(data)
+        _, dishes_id = data.split("|", 1)
 
         conn = get_conn()
         cur = conn.cursor()
         cur.execute(
-            "SELECT weight, kcal, protein, fat, carbs FROM dishes WHERE restaurant = %s AND dish = %s",
-            (restaurant_name, dish_name)
+            "SELECT dish, restaurant, weight, kcal, protein, fat, carbs FROM dishes WHERE id = %s",
+            (dishes_id,)
         )
         row = cur.fetchone()
+
         cur.close()
         conn.close()
 
@@ -255,13 +257,13 @@ def callback_message(callback):
         back_btn = types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data='back_1')
         add_btn = types.InlineKeyboardButton(
             "🛒 Добавить блюдо в корзину.",
-            callback_data=f"add_dish_to_cart|{restaurant_name}|{dish_name}"
+            callback_data=f"add_dish_to_cart|{dishes_id}"
         )
         markup.add(back_btn)
         markup.row(add_btn)
 
         if row:
-            weight, kcal, protein, fat, carbs = row
+            dish_name, restaurant_name, weight, kcal, protein, fat, carbs = row
             bot.send_message(
                 callback.message.chat.id,
                 f"Ресторан - {restaurant_name}\n"
@@ -282,8 +284,8 @@ def callback_message(callback):
         if not ls:
             bot.send_message(callback.message.chat.id, "Ваша корзина пуста")
         else:
-            bot_answer = "\n".join(f"{restaurant} — {product} - {qty} шт."
-                                   for restaurant, product, qty in ls)
+            bot_answer = "\n".join(f"{id}.{restaurant} — {product} - {qty} шт."
+                                   for id, restaurant, product, qty in ls)
             bot_answer += "\n\n"
             
             res = get_cart_totals(callback.from_user.id)
@@ -296,7 +298,12 @@ def callback_message(callback):
             bot.send_message(callback.message.chat.id, bot_answer)
 
     elif data.startswith("add_dish_to_cart|"):
-        _, restaurant_name, dish_name = data.split("|", 2)
+        _, dishes_id = data.split("|", 1)
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT dish, restaurant FROM dishes WHERE id = %s", (dishes_id, ))
+        result = cur.fetchone()
+        dish_name, restaurant_name = result
         add_to_cart(user_id, dish_name, restaurant_name)
         bot.send_message(
             callback.message.chat.id,
@@ -315,10 +322,10 @@ def dish_handling_func_1(message, restaurant):
     dish_name = message.text.strip()
     restaurant_name = restaurant.strip()
 
-    conn = sqlite3.connect("alamacros.db")
+    conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT dish, weight, kcal, protein, fat, carbs FROM dishes WHERE restaurant = ?", (restaurant_name,))
+    cur.execute("SELECT dish, weight, kcal, protein, fat, carbs FROM dishes WHERE restaurant = %s", (restaurant_name,))
     all_dishes = cur.fetchall()
 
     
@@ -342,7 +349,9 @@ def dish_handling_func_1(message, restaurant):
     for match in best_matches:
         name, score, _ = match
         if score >= 50:
-            btn = types.InlineKeyboardButton(name, callback_data=f"dish|{restaurant_name}|{name}")
+            cur.execute("SELECT id FROM dishes WHERE restaurant = %s AND dish = %s", (restaurant_name, name))
+            res = cur.fetchone()
+            btn = types.InlineKeyboardButton(name, callback_data=f"dish|{res[0]}")
             markup.add(btn)
             added = True
 
