@@ -73,13 +73,20 @@ def show_menu(message):
         bot_answer += "\n\n"
             
         res = get_cart_totals(message.from_user.id)
-        kcal, protein, fat, carbs = res
+        weight, kcal, protein, fat, carbs = res
         bot_answer += f"""Всего:
+            Вес - {weight} г.
             Каллории - {kcal} ккал.
             Белки - {protein} г.
             Жиры - {fat} г.
             Углеводы - {carbs} г. """
-        bot.send_message(message.chat.id, bot_answer)
+        markup = types.InlineKeyboardMarkup()
+        del_btn = types.InlineKeyboardButton(text="🚫 Убрать блюдо из корзины", callback_data="del_dish")
+        del_cart_btn = types.InlineKeyboardButton(text="❌ Очистить корзину", callback_data="del_cart")
+        markup.row(del_btn)
+        markup.row(del_cart_btn)
+
+        bot.send_message(message.chat.id, bot_answer, reply_markup=markup)
 
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
@@ -110,6 +117,7 @@ def add_to_cart(user_id, dish_name, restaurant):
 
     if not dish:
         cur.close()
+        conn.close()
         return "❌ Такого блюда в этом ресторане нет!"
 
     weight, kcal, protein, fat, carbs = dish
@@ -124,9 +132,14 @@ def add_to_cart(user_id, dish_name, restaurant):
     if existing:
         cur.execute("""
             UPDATE cart_items 
-            SET quantity = quantity + 1 
+            SET quantity = quantity + 1,
+                weight = weight + %s,
+                kcal = kcal + %s,
+                protein = protein + %s,
+                fat = fat + %s,
+                carbs = carbs + %s
             WHERE id = %s
-        """, (existing[0],))
+        """, (weight, kcal, protein, fat, carbs, existing[0]))
     else:
         cur.execute("""
             INSERT INTO cart_items(user_id, dish, restaurant, weight, kcal, protein, fat, carbs, quantity)
@@ -135,8 +148,10 @@ def add_to_cart(user_id, dish_name, restaurant):
 
     conn.commit()
     cur.close()
+    conn.close()
 
     return f"✅ {dish_name} ({restaurant}) добавлен в корзину!"
+
 
 
 
@@ -168,6 +183,7 @@ def get_cart_totals(user_id):
     cursor = conn.cursor()
     cursor.execute("""
         SELECT 
+            COALESCE(SUM(c.weight),0),
             COALESCE(SUM(c.kcal),0),
             COALESCE(SUM(c.protein),0),
             COALESCE(SUM(c.fat),0),
@@ -239,7 +255,6 @@ def callback_message(callback):
         )
 
     elif data.startswith("dish|"):
-        print(data)
         _, dishes_id = data.split("|", 1)
 
         conn = get_conn()
@@ -284,18 +299,24 @@ def callback_message(callback):
         if not ls:
             bot.send_message(callback.message.chat.id, "Ваша корзина пуста")
         else:
+            markup = types.InlineKeyboardMarkup()
+            del_btn = types.InlineKeyboardButton(text="🚫 Убрать блюдо из корзины", callback_data="del_dish")
+            del_cart_btn = types.InlineKeyboardButton(text="❌ Очистить корзину", callback_data="del_cart")
+            markup.row(del_btn)
+            markup.row(del_cart_btn)
             bot_answer = "\n".join(f"{id}.{restaurant} — {product} - {qty} шт."
                                    for id, restaurant, product, qty in ls)
             bot_answer += "\n\n"
             
             res = get_cart_totals(callback.from_user.id)
-            kcal, protein, fat, carbs = res
+            weight, kcal, protein, fat, carbs = res
             bot_answer += f"""Всего:
+            Вес - {weight} г.
             Каллории - {kcal} ккал.
             Белки - {protein} г.
             Жиры - {fat} г.
             Углеводы - {carbs} г. """
-            bot.send_message(callback.message.chat.id, bot_answer)
+            bot.send_message(callback.message.chat.id, bot_answer, reply_markup=markup)
 
     elif data.startswith("add_dish_to_cart|"):
         _, dishes_id = data.split("|", 1)
@@ -309,11 +330,75 @@ def callback_message(callback):
             callback.message.chat.id,
             f"✅ Блюдо '{dish_name}' из {restaurant_name} добавлено в корзину"
         )
-
+    elif data == "del_cart":
+        clear_cart(callback.from_user.id)
+        bot.send_message(callback.message.chat.id, "✅ Ваша корзина успешно очищена!")
+    elif data == "del_dish":
+        msg1 = bot.send_message(callback.message.chat.id, "✏️ Введите номер блюда и количество порций, которые хотите удалить ЧЕРЕЗ ПРОБЕЛ")
+        bot.register_next_step_handler(msg1, delete_dish, callback.from_user.id)
 
         
     
+def delete_dish(message, user_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    item_id, qty_to_remove = message.text.strip().split()
+    # print(qty_to_remove, item_id, user_id)
+    
+    cur.execute("SELECT dish FROM cart_items WHERE id = %s", (item_id, ))
+    res1 = cur.fetchone()
+    dish_name = res1[0]
+    
+    # cur.execute("""
+    #     UPDATE cart_items
+    #     SET quantity = quantity - %s
+    #     WHERE id = %s AND user_id = %s
+    # """, (int(qty_to_remove), int(item_id), user_id))
+    
+    cur.execute("SELECT weight, kcal, protein, fat, carbs FROM dishes WHERE dish = %s", (dish_name, ))
+    res2 = cur.fetchone()
+    weight, kcal_per_portion, protein_per_portion, fat_per_portion, carbs_per_portion = res2
+    
+    qty_to_remove = int(qty_to_remove)
+    weight = float(weight)
+    kcal_per_portion = float(kcal_per_portion)
+    protein_per_portion = float(protein_per_portion)
+    fat_per_portion = float(fat_per_portion)
+    carbs_per_portion = float(carbs_per_portion)
+    
+    delta_weight = qty_to_remove * weight
+    delta_kcal = qty_to_remove * kcal_per_portion
+    delta_protein = qty_to_remove * protein_per_portion
+    delta_fat = qty_to_remove * fat_per_portion
+    delta_carbs = qty_to_remove * carbs_per_portion
 
+    
+    cur.execute("""
+    UPDATE cart_items
+    SET 
+        weight = weight - %s,
+        quantity = quantity - %s,
+        kcal = kcal - %s,
+        protein = protein - %s,
+        fat = fat - %s,
+        carbs = carbs - %s
+    WHERE id = %s AND user_id = %s
+    RETURNING quantity;
+""", (
+    delta_weight, qty_to_remove,
+    delta_kcal, delta_protein,
+    delta_fat, delta_carbs,
+    item_id, user_id
+))
+
+    cur.execute("""
+        DELETE FROM cart_items
+        WHERE id = %s AND user_id = %s AND quantity <= 0
+    """, (item_id, user_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+    bot.send_message(message.chat.id, "✅ Блюдо успешно удалено из корзины!")
     
 
 def dish_handling_func_1(message, restaurant):
