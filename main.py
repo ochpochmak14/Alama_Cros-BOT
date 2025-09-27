@@ -4,7 +4,7 @@ import sqlite3
 import psycopg2
 
 
-bot = telebot.TeleBot('Token')
+bot = telebot.TeleBot('TOKEN')
 
 
 
@@ -12,7 +12,7 @@ def get_conn():
     return psycopg2.connect(
         dbname="alamacros",
         user="postgres",
-        password="пароль",
+        password="password",
         host="127.0.0.1",
         port="5432"
     )
@@ -30,6 +30,7 @@ def start(message):
 
     
     inline_markup = types.InlineKeyboardMarkup()
+    history_btn = types.InlineKeyboardButton("📜 История поиска", callback_data="history")
     mcdonald_btn = types.InlineKeyboardButton("McDonald's", callback_data='mcdonalds')
     kfc_btn = types.InlineKeyboardButton("KFC", callback_data='kfc')
     burgerk_btn = types.InlineKeyboardButton("Burger King", callback_data='burgerk')
@@ -39,6 +40,7 @@ def start(message):
 
     inline_markup.add(mcdonald_btn, kfc_btn, burgerk_btn, tanuki_btn, starbucks_btn)
     inline_markup.row(cart)
+    inline_markup.row(history_btn)
 
    
     bot.send_message(
@@ -97,11 +99,11 @@ def handle_text(message):
 
     if restaurant:
         ask_for_dish(message.chat.id, restaurant)
-    elif text == "📋 Меню":
-        pass
     else:
         bot.send_message(message.chat.id, "Этого ресторана нет в базе. Напишите его название в разделе предложений, и мы добавим его в будущем.")
         start(message)
+
+
 
 
 def add_to_cart(user_id, dish_name, restaurant):
@@ -224,6 +226,76 @@ def ask_for_dish(chat_id, restaurant, message_id=None):
     bot.register_next_step_handler(msg, dish_handling_func_1, restaurant)
 
 
+def get_last_history(user_id, limit=5):
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT dish, restaurant 
+         FROM search_history 
+         WHERE user_id = %s 
+         ORDER BY searched_at DESC 
+         LIMIT %s""",
+        (user_id, limit)
+    )
+    return cursor.fetchall()  
+
+
+def add_to_history(user_id, dish_name, restaurant):
+    conn = get_conn()
+    cursor = conn.cursor()
+    
+    cursor.execute(
+        """
+        SELECT 1 FROM search_history 
+        WHERE user_id = %s AND dish = %s AND restaurant = %s
+        """,
+        (user_id, dish_name, restaurant)
+    )
+    exists = cursor.fetchone()
+    
+    if not exists:
+        cursor.execute(
+            """
+            INSERT INTO search_history (user_id, dish, restaurant) 
+            VALUES (%s, %s, %s)
+            """,
+            (user_id, dish_name, restaurant)
+        )
+        conn.commit()
+    
+    cursor.close()
+    conn.close()
+
+
+
+def show_history(callback):
+    user_id = callback.from_user.id
+    history = get_last_history(user_id)
+    
+    
+    if not history:
+        bot.send_message(callback.message.chat.id, "❌ История пуста")
+        show_menu(callback.message)
+    else:
+        markup = types.InlineKeyboardMarkup()
+        for dish, restaurant in history:
+            conn = get_conn()
+            cursor = conn.cursor()
+            cursor.execute("""
+                        SELECT id FROM dishes
+                        WHERE dish = %s AND
+                        restaurant = %s
+                        """, (dish, restaurant))
+            dish_id = cursor.fetchone()[0]
+            cursor.close()
+            conn.close()
+            
+            markup.add(types.InlineKeyboardButton(f"{dish} ({restaurant})", callback_data=f"dish|{dish_id}"))
+        
+        bot.send_message(callback.message.chat.id, "📜 История поиска:", reply_markup=markup)
+
+
+
 @bot.callback_query_handler(func=lambda callback: True)
 def callback_message(callback):
     bot.answer_callback_query(callback.id)
@@ -235,9 +307,13 @@ def callback_message(callback):
         dt2 = rename(callback)
         ask_for_dish(callback.message.chat.id, dt2, callback.message.message_id)
 
+    elif data == "history":
+        show_history(callback)
+    
     elif data == 'back_1':
         markup = types.InlineKeyboardMarkup()
         mcdonald_btn = types.InlineKeyboardButton("McDonald's", callback_data='mcdonalds')
+        history_btn = types.InlineKeyboardButton("📜 История поиска", callback_data="history")
         kfc_btn = types.InlineKeyboardButton("KFC", callback_data='kfc')
         burgerk_btn = types.InlineKeyboardButton("Burger King", callback_data='burgerk')
         tanuki_btn = types.InlineKeyboardButton("Tanuki", callback_data='tanuki')
@@ -245,6 +321,7 @@ def callback_message(callback):
         cart_btn = types.InlineKeyboardButton("🛒 Показать корзину", callback_data='show_cart')
         markup.add(mcdonald_btn, kfc_btn, burgerk_btn, tanuki_btn, starbucks_btn)
         markup.row(cart_btn)
+        markup.row(history_btn)
 
         bot.edit_message_text(
             chat_id=callback.message.chat.id,
@@ -256,12 +333,12 @@ def callback_message(callback):
 
     elif data.startswith("dish|"):
         _, dishes_id = data.split("|", 1)
-
+        dishes_id = int(dishes_id)
         conn = get_conn()
         cur = conn.cursor()
         cur.execute(
             "SELECT dish, restaurant, weight, kcal, protein, fat, carbs FROM dishes WHERE id = %s",
-            (dishes_id,)
+            (dishes_id, )
         )
         row = cur.fetchone()
 
@@ -291,6 +368,8 @@ def callback_message(callback):
                 f"Углеводы: {carbs} г",
                 reply_markup=markup
             )
+            
+            add_to_history(user_id, dish_name, restaurant_name)
         else:
             bot.send_message(callback.message.chat.id, "Блюдо не найдено в этом ресторане.", reply_markup=markup)
 
@@ -348,12 +427,6 @@ def delete_dish(message, user_id):
     cur.execute("SELECT dish FROM cart_items WHERE id = %s", (item_id, ))
     res1 = cur.fetchone()
     dish_name = res1[0]
-    
-    # cur.execute("""
-    #     UPDATE cart_items
-    #     SET quantity = quantity - %s
-    #     WHERE id = %s AND user_id = %s
-    # """, (int(qty_to_remove), int(item_id), user_id))
     
     cur.execute("SELECT weight, kcal, protein, fat, carbs FROM dishes WHERE dish = %s", (dish_name, ))
     res2 = cur.fetchone()
