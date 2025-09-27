@@ -4,7 +4,7 @@ import sqlite3
 import psycopg2
 
 
-bot = telebot.TeleBot('TOKEN')
+bot = telebot.TeleBot('Token')
 
 
 
@@ -12,7 +12,7 @@ def get_conn():
     return psycopg2.connect(
         dbname="alamacros",
         user="postgres",
-        password="password",
+        password="psword",
         host="127.0.0.1",
         port="5432"
     )
@@ -291,7 +291,8 @@ def show_history(callback):
             conn.close()
             
             markup.add(types.InlineKeyboardButton(f"{dish} ({restaurant})", callback_data=f"dish|{dish_id}"))
-        
+        back_btn = types.InlineKeyboardButton("⬅️ Назад", callback_data='back_1')
+        markup.row(back_btn)
         bot.send_message(callback.message.chat.id, "📜 История поиска:", reply_markup=markup)
 
 
@@ -422,7 +423,6 @@ def delete_dish(message, user_id):
     conn = get_conn()
     cur = conn.cursor()
     item_id, qty_to_remove = message.text.strip().split()
-    # print(qty_to_remove, item_id, user_id)
     
     cur.execute("SELECT dish FROM cart_items WHERE id = %s", (item_id, ))
     res1 = cur.fetchone()
@@ -503,10 +503,14 @@ def dish_handling_func_1(message, restaurant):
 
     markup = types.InlineKeyboardMarkup()
     added = False
-
+    exist = False
+    dish_name2 = None
     for match in best_matches:
         name, score, _ = match
-        if score >= 50:
+        if score >= 99:
+            exist = True
+            dish_name2 = name
+        elif score >= 50:
             cur.execute("SELECT id FROM dishes WHERE restaurant = %s AND dish = %s", (restaurant_name, name))
             res = cur.fetchone()
             btn = types.InlineKeyboardButton(name, callback_data=f"dish|{res[0]}")
@@ -515,8 +519,46 @@ def dish_handling_func_1(message, restaurant):
 
     back_btn = types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data='back_1')
     markup.add(back_btn)
+    
+    if exist:
+        cur.execute("SELECT id FROM dishes WHERE restaurant = %s AND dish = %s", (restaurant_name, dish_name2))
+        res = cur.fetchone()
+        dishes_id = res[0]
+        cur.execute(
+            "SELECT dish, restaurant, weight, kcal, protein, fat, carbs FROM dishes WHERE id = %s",
+            (dishes_id, )
+        )
+        row = cur.fetchone()
 
-    if added:
+        cur.close()
+        conn.close()
+
+        markup = types.InlineKeyboardMarkup()
+        back_btn = types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data='back_1')
+        add_btn = types.InlineKeyboardButton(
+            "🛒 Добавить блюдо в корзину.",
+            callback_data=f"add_dish_to_cart|{dishes_id}"
+        )
+        markup.add(back_btn)
+        markup.row(add_btn)
+
+        if row:
+            dish_name, restaurant_name, weight, kcal, protein, fat, carbs = row
+            bot.send_message(
+                message.chat.id,
+                f"Ресторан - {restaurant_name}\n"
+                f"Блюдо - {dish_name}\n"
+                f"------------------\n"
+                f"Порция: {weight} г\n"
+                f"Калории: {kcal}\n"
+                f"Белки: {protein} г\n"
+                f"Жиры: {fat} г\n"
+                f"Углеводы: {carbs} г",
+                reply_markup=markup
+            )
+            
+            add_to_history(message.from_user.id, dish_name, restaurant_name)
+    elif added:
         bot.send_message(message.chat.id, "Похожие блюда:", reply_markup=markup)
     else:
         bot.send_message(
