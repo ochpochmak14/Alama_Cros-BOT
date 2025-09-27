@@ -4,7 +4,7 @@ import sqlite3
 import psycopg2
 
 
-bot = telebot.TeleBot('TOKEN')
+bot = telebot.TeleBot('Token')
 
 
 
@@ -12,7 +12,7 @@ def get_conn():
     return psycopg2.connect(
         dbname="alamacros",
         user="postgres",
-        password="pass",
+        password="пароль",
         host="127.0.0.1",
         port="5432"
     )
@@ -97,7 +97,7 @@ def handle_text(message):
 
     if restaurant:
         ask_for_dish(message.chat.id, restaurant)
-    if text == "📋 Меню":
+    elif text == "📋 Меню":
         pass
     else:
         bot.send_message(message.chat.id, "Этого ресторана нет в базе. Напишите его название в разделе предложений, и мы добавим его в будущем.")
