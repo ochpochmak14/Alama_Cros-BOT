@@ -94,7 +94,7 @@ SELECT
     fish,
     nuts,
     citrus
-FROM dishes;```
+FROM dishes;
 
 
 DROP TABLE dishes;
@@ -118,7 +118,16 @@ CREATE TABLE cart_items (
 ```
 ALTER TABLE dishes ADD COLUMN id SERIAL PRIMARY KEY;
 ```
-7.<img width="287" height="150" alt="изображение" src="https://github.com/user-attachments/assets/f04dfb76-2891-43f7-be8a-eb324bbb6155" />
+7.
+```
+ALTER TABLE dishes RENAME COLUMN dish_name TO dish;
+ALTER TABLE dishes RENAME COLUMN portion_size_gml TO weight;
+ALTER TABLE dishes RENAME COLUMN protein_g TO protein;
+ALTER TABLE dishes RENAME COLUMN fat_g TO fat;
+ALTER TABLE dishes RENAME COLUMN carbs_g TO carbs;
+ALTER TABLE dishes RENAME COLUMN calories TO kcal;
+```
+8.<img width="287" height="150" alt="изображение" src="https://github.com/user-attachments/assets/f04dfb76-2891-43f7-be8a-eb324bbb6155" />
 
 **dbname=название своей database**
 
