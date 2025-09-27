@@ -476,35 +476,44 @@ def delete_dish(message, user_id):
 
 def dish_handling_func_1(message, restaurant):
     from rapidfuzz import process, fuzz
-    
+
     dish_name = message.text.strip()
     restaurant_name = restaurant.strip()
 
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT dish, weight, kcal, protein, fat, carbs FROM dishes WHERE restaurant = %s", (restaurant_name,))
+    cur.execute(
+        "SELECT dish, weight, kcal, protein, fat, carbs FROM dishes WHERE restaurant = %s",
+        (restaurant_name,)
+    )
     all_dishes = cur.fetchall()
 
-    
-    
     if not all_dishes:
         markup = types.InlineKeyboardMarkup()
         back_btn = types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data='back_1')
         markup.add(back_btn)
-        
         bot.send_message(message.chat.id, "Блюда для этого ресторана не найдены.", reply_markup=markup)
         cur.close()
         conn.close()
         return
 
     dishes_names = [row[0] for row in all_dishes]
-    best_matches = process.extract(dish_name, dishes_names, scorer=fuzz.ratio, limit=5)
+    dishes_map = {name.lower(): name for name in dishes_names}
+
+    best_matches = process.extract(
+        dish_name.lower(),
+        list(dishes_map.keys()),
+        scorer=fuzz.ratio,
+        limit=5
+    )
+    best_matches = [(dishes_map[name], score, idx) for name, score, idx in best_matches]
 
     markup = types.InlineKeyboardMarkup()
     added = False
     exist = False
     dish_name2 = None
+
     for match in best_matches:
         name, score, _ = match
         if score >= 99:
@@ -513,51 +522,52 @@ def dish_handling_func_1(message, restaurant):
         elif score >= 50:
             cur.execute("SELECT id FROM dishes WHERE restaurant = %s AND dish = %s", (restaurant_name, name))
             res = cur.fetchone()
-            btn = types.InlineKeyboardButton(name, callback_data=f"dish|{res[0]}")
-            markup.add(btn)
-            added = True
+            if res:
+                btn = types.InlineKeyboardButton(name, callback_data=f"dish|{res[0]}")
+                markup.add(btn)
+                added = True
 
     back_btn = types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data='back_1')
     markup.add(back_btn)
-    
+
     if exist:
         cur.execute("SELECT id FROM dishes WHERE restaurant = %s AND dish = %s", (restaurant_name, dish_name2))
         res = cur.fetchone()
-        dishes_id = res[0]
-        cur.execute(
-            "SELECT dish, restaurant, weight, kcal, protein, fat, carbs FROM dishes WHERE id = %s",
-            (dishes_id, )
-        )
-        row = cur.fetchone()
-
-        cur.close()
-        conn.close()
-
-        markup = types.InlineKeyboardMarkup()
-        back_btn = types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data='back_1')
-        add_btn = types.InlineKeyboardButton(
-            "🛒 Добавить блюдо в корзину.",
-            callback_data=f"add_dish_to_cart|{dishes_id}"
-        )
-        markup.add(back_btn)
-        markup.row(add_btn)
-
-        if row:
-            dish_name, restaurant_name, weight, kcal, protein, fat, carbs = row
-            bot.send_message(
-                message.chat.id,
-                f"Ресторан - {restaurant_name}\n"
-                f"Блюдо - {dish_name}\n"
-                f"------------------\n"
-                f"Порция: {weight} г\n"
-                f"Калории: {kcal}\n"
-                f"Белки: {protein} г\n"
-                f"Жиры: {fat} г\n"
-                f"Углеводы: {carbs} г",
-                reply_markup=markup
+        if res:
+            dishes_id = res[0]
+            cur.execute(
+                "SELECT dish, restaurant, weight, kcal, protein, fat, carbs FROM dishes WHERE id = %s",
+                (dishes_id,)
             )
-            
-            add_to_history(message.from_user.id, dish_name, restaurant_name)
+            row = cur.fetchone()
+
+            cur.close()
+            conn.close()
+
+            markup = types.InlineKeyboardMarkup()
+            back_btn = types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data='back_1')
+            add_btn = types.InlineKeyboardButton(
+                "🛒 Добавить блюдо в корзину.",
+                callback_data=f"add_dish_to_cart|{dishes_id}"
+            )
+            markup.add(back_btn)
+            markup.row(add_btn)
+
+            if row:
+                dish_name, restaurant_name, weight, kcal, protein, fat, carbs = row
+                bot.send_message(
+                    message.chat.id,
+                    f"Ресторан - {restaurant_name}\n"
+                    f"Блюдо - {dish_name}\n"
+                    f"------------------\n"
+                    f"Порция: {weight} г\n"
+                    f"Калории: {kcal}\n"
+                    f"Белки: {protein} г\n"
+                    f"Жиры: {fat} г\n"
+                    f"Углеводы: {carbs} г",
+                    reply_markup=markup
+                )
+                add_to_history(message.from_user.id, dish_name, restaurant_name)
     elif added:
         bot.send_message(message.chat.id, "Похожие блюда:", reply_markup=markup)
     else:
@@ -566,9 +576,10 @@ def dish_handling_func_1(message, restaurant):
             "Этого блюда нет в базе. Попробуйте ввести другое название или уточнить запрос.",
             reply_markup=markup
         )
-        
+
     cur.close()
     conn.close()
+
 
 
 
