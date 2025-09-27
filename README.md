@@ -17,7 +17,7 @@
 
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-* POSTGRESQL SETUP
+* POSTGRESQL SETUP 1.0
 
 1.Скачать **PgAdmin**
 
@@ -135,3 +135,18 @@ ALTER TABLE dishes RENAME COLUMN calories TO kcal;
 
 Остальное менять не нужно!
 
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+**POSTGRESQL SETUP 2.0**
+
+
+1.В **Query Tool** пишем
+```
+CREATE TABLE search_history (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    dish TEXT NOT NULL,
+    restaurant TEXT NOT NULL,
+    searched_at TIMESTAMP DEFAULT NOW()
+);
+
+```
