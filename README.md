@@ -127,7 +127,23 @@ ALTER TABLE dishes RENAME COLUMN fat_g TO fat;
 ALTER TABLE dishes RENAME COLUMN carbs_g TO carbs;
 ALTER TABLE dishes RENAME COLUMN calories TO kcal;
 ```
-8.<img width="287" height="150" alt="изображение" src="https://github.com/user-attachments/assets/f04dfb76-2891-43f7-be8a-eb324bbb6155" />
+8.
+```
+ALTER TABLE cart_items
+    ADD COLUMN gluten text,
+    ADD COLUMN sulfites text,
+    ADD COLUMN milk text,
+    ADD COLUMN sesame text,
+    ADD COLUMN egg text,
+    ADD COLUMN soy text,
+    ADD COLUMN mustard text,
+    ADD COLUMN celery text,
+    ADD COLUMN fish text,
+    ADD COLUMN nuts text,
+    ADD COLUMN citrus text;
+```
+
+9.<img width="287" height="150" alt="изображение" src="https://github.com/user-attachments/assets/f04dfb76-2891-43f7-be8a-eb324bbb6155" />
 
 **dbname=название своей database**
 
