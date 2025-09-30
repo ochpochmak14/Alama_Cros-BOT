@@ -12,7 +12,7 @@ def get_conn():
     return psycopg2.connect(
         dbname="alamacros",
         user="postgres",
-        password="psword",
+        password="pas",
         host="127.0.0.1",
         port="5432"
     )
@@ -163,7 +163,17 @@ def add_to_cart(user_id, dish_name, restaurant):
 def get_cart(user_id):
     conn = get_conn()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, restaurant, dish, quantity FROM cart_items WHERE user_id = %s ORDER BY id", (user_id,))
+    cursor.execute("""
+    SELECT 
+        ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY id) AS item_number,
+        restaurant,
+        dish,
+        quantity
+    FROM cart_items
+    WHERE user_id = %s
+    ORDER BY id
+""", (user_id,))
+
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -422,57 +432,76 @@ def callback_message(callback):
 def delete_dish(message, user_id):
     conn = get_conn()
     cur = conn.cursor()
-    item_id, qty_to_remove = message.text.strip().split()
-    
-    cur.execute("SELECT dish FROM cart_items WHERE id = %s", (item_id, ))
-    res1 = cur.fetchone()
-    dish_name = res1[0]
-    
-    cur.execute("SELECT weight, kcal, protein, fat, carbs FROM dishes WHERE dish = %s", (dish_name, ))
-    res2 = cur.fetchone()
-    weight, kcal_per_portion, protein_per_portion, fat_per_portion, carbs_per_portion = res2
-    
+
+   
+    item_number, qty_to_remove = message.text.strip().split()
+    item_number = int(item_number)
     qty_to_remove = int(qty_to_remove)
-    weight = float(weight)
-    kcal_per_portion = float(kcal_per_portion)
-    protein_per_portion = float(protein_per_portion)
-    fat_per_portion = float(fat_per_portion)
-    carbs_per_portion = float(carbs_per_portion)
-    
-    delta_weight = qty_to_remove * weight
-    delta_kcal = qty_to_remove * kcal_per_portion
-    delta_protein = qty_to_remove * protein_per_portion
-    delta_fat = qty_to_remove * fat_per_portion
-    delta_carbs = qty_to_remove * carbs_per_portion
 
     
     cur.execute("""
-    UPDATE cart_items
-    SET 
-        weight = weight - %s,
-        quantity = quantity - %s,
-        kcal = kcal - %s,
-        protein = protein - %s,
-        fat = fat - %s,
-        carbs = carbs - %s
-    WHERE id = %s AND user_id = %s
-    RETURNING quantity;
-""", (
-    delta_weight, qty_to_remove,
-    delta_kcal, delta_protein,
-    delta_fat, delta_carbs,
-    item_id, user_id
-))
+        SELECT id, dish
+        FROM (
+            SELECT 
+                id,
+                dish,
+                ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY id) AS rn
+            FROM cart_items
+            WHERE user_id = %s
+        ) t
+        WHERE rn = %s
+    """, (user_id, item_number))
+    res1 = cur.fetchone()
 
+    if not res1:
+        bot.send_message(message.chat.id, f"❌ В корзине нет блюда №{item_number}")
+        cur.close()
+        conn.close()
+        return
+
+    real_id, dish_name = res1
+
+   
+    cur.execute("SELECT weight, kcal, protein, fat, carbs FROM dishes WHERE dish = %s", (dish_name,))
+    res2 = cur.fetchone()
+    weight, kcal_per_portion, protein_per_portion, fat_per_portion, carbs_per_portion = res2
+
+   
+    delta_weight = qty_to_remove * float(weight)
+    delta_kcal = qty_to_remove * float(kcal_per_portion)
+    delta_protein = qty_to_remove * float(protein_per_portion)
+    delta_fat = qty_to_remove * float(fat_per_portion)
+    delta_carbs = qty_to_remove * float(carbs_per_portion)
+
+  
+    cur.execute("""
+        UPDATE cart_items
+        SET 
+            weight = weight - %s,
+            quantity = quantity - %s,
+            kcal = kcal - %s,
+            protein = protein - %s,
+            fat = fat - %s,
+            carbs = carbs - %s
+        WHERE id = %s AND user_id = %s
+        RETURNING quantity;
+    """, (
+        delta_weight, qty_to_remove,
+        delta_kcal, delta_protein,
+        delta_fat, delta_carbs,
+        real_id, user_id
+    ))
+
+    
     cur.execute("""
         DELETE FROM cart_items
         WHERE id = %s AND user_id = %s AND quantity <= 0
-    """, (item_id, user_id))
+    """, (real_id, user_id))
+
     conn.commit()
     cur.close()
     conn.close()
-    bot.send_message(message.chat.id, "✅ Блюдо успешно удалено из корзины!")
-    
+    bot.send_message(message.chat.id, f"✅ Блюдо №{item_number} удалено из корзины!")
 
 def dish_handling_func_1(message, restaurant):
     from rapidfuzz import process, fuzz
