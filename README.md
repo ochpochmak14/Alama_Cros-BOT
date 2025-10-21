@@ -26,24 +26,22 @@
 и вписать 
 ```
 CREATE TABLE dishes (
-    restaurant           TEXT,
-    dish_name            TEXT,
-    portion_size_gml     TEXT,
-    calories             TEXT,
-    protein_g            TEXT,
-    fat_g                TEXT,
-    carbs_g              TEXT,
-    gluten               TEXT,
-    sulfites             TEXT,
-    milk                 TEXT,
-    sesame               TEXT,
-    egg                  TEXT,
-    soy                  TEXT,
-    mustard              TEXT,
-    celery               TEXT,
-    fish                 TEXT,
-    nuts                 TEXT,
-    citrus               TEXT
+    restaurant TEXT,
+    dish_name TEXT,
+    weight TEXT,
+    calories TEXT,
+    protein TEXT,
+    fat TEXT,
+    carbs TEXT,
+	allergens TEXT,
+    sesame TEXT,
+	egg TEXT,
+	soy TEXT,
+	mustard TEXT,
+	celery TEXT,
+	fish TEXT,
+	nuts TEXT,
+	citrus TEXT
 );
 ```
 
@@ -51,54 +49,7 @@ CREATE TABLE dishes (
 ```\copy dishes FROM 'ПУТЬ К ФАЙЛУ .csv' DELIMITER ',' CSV HEADER ENCODING 'UTF8';```
 
 5.Вернуться в **Query Tool** и вписать
-```
-CREATE TABLE dishes_clean (
-    restaurant       TEXT,
-    dish_name        TEXT,
-    portion_size_gml REAL,
-    calories         REAL,
-    protein_g        REAL,
-    fat_g            REAL,
-    carbs_g          REAL,
-    gluten           TEXT,
-    sulfites         TEXT,
-    milk             TEXT,
-    sesame           TEXT,
-    egg              TEXT,
-    soy              TEXT,
-    mustard          TEXT,
-    celery           TEXT,
-    fish             TEXT,
-    nuts             TEXT,
-    citrus           TEXT
-);
 
-INSERT INTO dishes_clean
-SELECT
-    restaurant,
-    dish_name,
-    NULLIF(REPLACE(portion_size_gml, ',', '.'), '')::REAL,
-    NULLIF(REPLACE(calories, ',', '.'), '')::REAL,
-    NULLIF(REPLACE(protein_g, ',', '.'), '')::REAL,
-    NULLIF(REPLACE(fat_g, ',', '.'), '')::REAL,
-    NULLIF(REPLACE(carbs_g, ',', '.'), '')::REAL,
-    gluten,
-    sulfites,
-    milk,
-    sesame,
-    egg,
-    soy,
-    mustard,
-    celery,
-    fish,
-    nuts,
-    citrus
-FROM dishes;
-
-
-DROP TABLE dishes;
-ALTER TABLE dishes_clean RENAME TO dishes;
-```
 ```
 CREATE TABLE cart_items (
     id SERIAL PRIMARY KEY,
@@ -110,39 +61,25 @@ CREATE TABLE cart_items (
     protein NUMERIC,
     fat NUMERIC,
     carbs NUMERIC,
-    quantity INT DEFAULT 1
+    quantity INT DEFAULT 1,
+    allergens TEXT,
+    sesame TEXT,
+	egg TEXT,
+	soy TEXT,
+	mustard TEXT,
+	celery TEXT,
+	fish TEXT,
+	nuts TEXT,
+	citrus TEXT
+    
 );
 ```
 6.Опять в **Query Tool** прописать 
 ```
 ALTER TABLE dishes ADD COLUMN id SERIAL PRIMARY KEY;
 ```
-7.
-```
-ALTER TABLE dishes RENAME COLUMN dish_name TO dish;
-ALTER TABLE dishes RENAME COLUMN portion_size_gml TO weight;
-ALTER TABLE dishes RENAME COLUMN protein_g TO protein;
-ALTER TABLE dishes RENAME COLUMN fat_g TO fat;
-ALTER TABLE dishes RENAME COLUMN carbs_g TO carbs;
-ALTER TABLE dishes RENAME COLUMN calories TO kcal;
-```
-8.
-```
-ALTER TABLE cart_items
-    ADD COLUMN gluten text,
-    ADD COLUMN sulfites text,
-    ADD COLUMN milk text,
-    ADD COLUMN sesame text,
-    ADD COLUMN egg text,
-    ADD COLUMN soy text,
-    ADD COLUMN mustard text,
-    ADD COLUMN celery text,
-    ADD COLUMN fish text,
-    ADD COLUMN nuts text,
-    ADD COLUMN citrus text;
-```
 
-9.<img width="287" height="150" alt="изображение" src="https://github.com/user-attachments/assets/f04dfb76-2891-43f7-be8a-eb324bbb6155" />
+7.<img width="287" height="150" alt="изображение" src="https://github.com/user-attachments/assets/f04dfb76-2891-43f7-be8a-eb324bbb6155" />
 
 **dbname=название своей database**
 
