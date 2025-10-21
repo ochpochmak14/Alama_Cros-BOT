@@ -5,6 +5,7 @@ def rename(callback):
         'burgerk': 'Burger King',
         'tanuki': 'Tanuki',
         'starbucks': 'Starbucks',
-        'tomyumbar': 'TomYumBar'
+        'tomyumbar': 'TomYumBar',
+        'popeyes': "Popeyes"
     }
     return mapping.get(callback.data, callback.data)
