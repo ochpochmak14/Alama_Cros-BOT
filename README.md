@@ -29,7 +29,7 @@ CREATE TABLE dishes (
     restaurant TEXT,
     dish TEXT,
     weight TEXT,
-    calories TEXT,
+    kcal TEXT,
     protein TEXT,
     fat TEXT,
     carbs TEXT,
