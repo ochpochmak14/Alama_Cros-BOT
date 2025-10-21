@@ -4,7 +4,7 @@ import sqlite3
 import psycopg2
 
 
-bot = telebot.TeleBot('Token')
+bot = telebot.TeleBot('8257277034:AAFJ4q2HlL6gL0dZcQQ6WvuSUygpTbyeuas')
 
 
 
@@ -12,7 +12,7 @@ def get_conn():
     return psycopg2.connect(
         dbname="alamacros",
         user="postgres",
-        password="psw",
+        password="Emin20090",
         host="127.0.0.1",
         port="5432"
     )
@@ -32,13 +32,14 @@ def start(message):
     inline_markup = types.InlineKeyboardMarkup()
     history_btn = types.InlineKeyboardButton("📜 История поиска", callback_data="history")
     mcdonald_btn = types.InlineKeyboardButton("McDonald's", callback_data='mcdonalds')
+    popeyes_btn = types.InlineKeyboardButton("POPEYES", callback_data="popeyes")
     kfc_btn = types.InlineKeyboardButton("KFC", callback_data='kfc')
     burgerk_btn = types.InlineKeyboardButton("Burger King", callback_data='burgerk')
     tanuki_btn = types.InlineKeyboardButton("Tanuki", callback_data='tanuki')
     starbucks_btn = types.InlineKeyboardButton("TomYumBar", callback_data='tomyumbar')
     cart = types.InlineKeyboardButton("🛒 Показать корзину", callback_data='show_cart')
 
-    inline_markup.add(mcdonald_btn, kfc_btn, burgerk_btn, tanuki_btn, starbucks_btn)
+    inline_markup.add(mcdonald_btn, popeyes_btn, kfc_btn, burgerk_btn, tanuki_btn, starbucks_btn)
     inline_markup.row(cart)
     inline_markup.row(history_btn)
 
