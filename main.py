@@ -4,7 +4,7 @@ import sqlite3
 import psycopg2
 
 
-bot = telebot.TeleBot('8257277034:AAFJ4q2HlL6gL0dZcQQ6WvuSUygpTbyeuas')
+bot = telebot.TeleBot('Token')
 
 
 
@@ -12,7 +12,7 @@ def get_conn():
     return psycopg2.connect(
         dbname="alamacros",
         user="postgres",
-        password="Emin20090",
+        password="psss",
         host="127.0.0.1",
         port="5432"
     )
