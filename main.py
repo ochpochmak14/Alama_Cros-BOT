@@ -392,8 +392,7 @@ def callback_message(callback):
         if row:
             restaurant_name, dish_name, weight, kcal, protein, fat, carbs, allergens = row
 
-
-            allergens_str = f"Аллергены - {allergens}" if allergens else "Без аллергенов"
+            allergens_str = f"Аллергены - {allergens}"
 
             bot.send_message(
                 callback.message.chat.id,
@@ -406,7 +405,7 @@ def callback_message(callback):
                 f"Жиры: {fat} г\n"
                 f"Углеводы: {carbs} г\n"
                 f"------------------\n"
-                f"⚠️{allergens_str}"
+                f"⚠️ {allergens_str}"
                 ,
                 reply_markup=markup
             )
@@ -613,7 +612,7 @@ def dish_handling_func_1(message, restaurant):
         if res:
             dishes_id = res[0]
             cur.execute(
-                "SELECT dish, restaurant, weight, kcal, protein, fat, carbs FROM dishes WHERE id = %s",
+                "SELECT dish, restaurant, weight, kcal, protein, fat, carbs, allergens FROM dishes WHERE id = %s",
                 (dishes_id,)
             )
             row = cur.fetchone()
@@ -631,7 +630,8 @@ def dish_handling_func_1(message, restaurant):
             markup.row(add_btn)
 
             if row:
-                dish_name, restaurant_name, weight, kcal, protein, fat, carbs = row
+                dish_name, restaurant_name, weight, kcal, protein, fat, carbs, allergens = row
+                allergens_str = f"Аллергены - {allergens}"
                 bot.send_message(
                     message.chat.id,
                     f"Ресторан - {restaurant_name}\n"
@@ -641,7 +641,8 @@ def dish_handling_func_1(message, restaurant):
                     f"Калории: {kcal}\n"
                     f"Белки: {protein} г\n"
                     f"Жиры: {fat} г\n"
-                    f"Углеводы: {carbs} г",
+                    f"Углеводы: {carbs} г\n"
+                    f"⚠️ {allergens_str}",
                     reply_markup=markup
                 )
                 add_to_history(message.from_user.id, dish_name, restaurant_name)
