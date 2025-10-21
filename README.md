@@ -27,7 +27,7 @@
 ```
 CREATE TABLE dishes (
     restaurant TEXT,
-    dish_name TEXT,
+    dish TEXT,
     weight TEXT,
     calories TEXT,
     protein TEXT,
