@@ -38,10 +38,11 @@ def start(message):
     tanuki_btn = types.InlineKeyboardButton("Tanuki", callback_data='tanuki')
     starbucks_btn = types.InlineKeyboardButton("TomYumBar", callback_data='tomyumbar')
     cart = types.InlineKeyboardButton("🛒 Показать корзину", callback_data='show_cart')
-
+    offers_btn = types.InlineKeyboardButton("📝 Раздел предложений", callback_data="offers")
     inline_markup.add(mcdonald_btn, popeyes_btn, kfc_btn, burgerk_btn, tanuki_btn, starbucks_btn)
     inline_markup.row(cart)
     inline_markup.row(history_btn)
+    inline_markup.row(offers_btn)
 
    
     bot.send_message(
@@ -458,6 +459,12 @@ def callback_message(callback):
         msg1 = bot.send_message(callback.message.chat.id, "✏️ Введите номер блюда и количество порций, которые хотите удалить ЧЕРЕЗ ПРОБЕЛ")
 
         bot.register_next_step_handler(msg1, delete_dish, callback.from_user.id)
+        
+        
+    elif data == "offers":
+        bot.send_message(callback.message.chat.id, """💡 Спасибо за ваши предложения!
+Пожалуйста, заполните форму по ссылке ниже 👇""")
+        bot.send_message(callback.message.chat.id, "гугл форма")
 
         
     
