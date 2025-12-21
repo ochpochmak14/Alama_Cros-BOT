@@ -6,16 +6,13 @@ import psycopg2
 
 bot = telebot.TeleBot('Token')
 
+DATABASE_URL = (
+    "str"
+)
 
 
 def get_conn():
-    return psycopg2.connect(
-        dbname="alamacros",
-        user="postgres",
-        password="psw",
-        host="127.0.0.1",
-        port="5432"
-    )
+    return psycopg2.connect(DATABASE_URL)
 
 
 
@@ -39,10 +36,12 @@ def start(message):
     starbucks_btn = types.InlineKeyboardButton("TomYumBar", callback_data='tomyumbar')
     cart = types.InlineKeyboardButton("🛒 Показать корзину", callback_data='show_cart')
     offers_btn = types.InlineKeyboardButton("📝 Раздел предложений", callback_data="offers")
+    cats_btn = types.InlineKeyboardButton("📙 Выбор по категориям", callback_data="cats")
     inline_markup.add(mcdonald_btn, popeyes_btn, kfc_btn, burgerk_btn, tanuki_btn, starbucks_btn)
     inline_markup.row(cart)
     inline_markup.row(history_btn)
     inline_markup.row(offers_btn)
+    inline_markup.row(cats_btn)
 
    
     bot.send_message(
@@ -466,8 +465,53 @@ def callback_message(callback):
 Пожалуйста, заполните форму по ссылке ниже 👇""")
         bot.send_message(callback.message.chat.id, "гугл форма")
 
+
+    elif data == "cats":
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sections")
+        ls1 = cur.fetchall()
+        markup = types.InlineKeyboardMarkup()
+        for i in ls1:
+            cat_name = i[0]
+            if i[0] == "Закуски":
+                cat_name += '🍟'
+            elif i[0] == "Салаты":
+                cat_name += '🥗'
+            elif i[0] == "Паста":
+                cat_name += '🍝'
+            elif i[0] == "Горячие блюда":
+                cat_name += '🍽️'
+            elif i[0] == "Бургеры":
+                cat_name += '🍔'
+            elif i[0] == "Пицца":
+                cat_name += '🍕'
+            elif i[0] == "Суши":
+                cat_name += '🍣'
+            elif i[0] == "Десерты":
+                cat_name += '🍰'
+            elif i[0] == "Соусы":
+                cat_name += '🥫'
+            elif i[0] == "Напитки":
+                cat_name += '🥤'
+            elif i[0] == "Завтраки":
+                cat_name += '🍳'
+            elif i[0] == "Супы":
+                cat_name += '🍲'
+            btn = types.InlineKeyboardButton(cat_name, callback_data=f"cat|{cat_name}")
+            markup.row(btn)
+        msg2 = bot.send_message(callback.message.chat.id, "Выберите категорию блюд:", reply_markup=markup)
+        bot.register_next_step_handler(msg2, choose_dish, callback.from_user.id)
         
-    
+        
+@bot.callback_query_handler(func=lambda call: True)
+def choose_dish(call):
+    call_data = call.split("|")
+    category = call_data[1]
+    conn = get_conn()
+    cur = conn.cursor() 
+    cur.execute("SELECT dish, restaurant, id FROM dishes WHERE section = %s", (category,))
+
 def delete_dish(message, user_id):
     conn = get_conn()
     cur = conn.cursor()
