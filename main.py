@@ -4,13 +4,10 @@ import sqlite3
 import psycopg2
 
 
-bot = telebot.TeleBot('Token')
+bot = telebot.TeleBot('tok')
 
-DATABASE_URL = (
-    "postgresql://"
-    "adr"
-    "req"
-)
+DATABASE_URL = "url"
+
 
 
 def get_conn():
@@ -469,6 +466,56 @@ def callback_message(callback):
 
 
     elif data == "cats":
+        markup = types.InlineKeyboardMarkup()
+        
+        btn_bludo = types.InlineKeyboardButton("По блюду 🍽️", callback_data="bludo")
+        btn_restaurant = types.InlineKeyboardButton("По ресторану 🏢", callback_data="restaurant")
+        
+        back_btn = types.InlineKeyboardButton("⬅️ Назад", callback_data='back_1')
+        
+        markup.add(btn_bludo, btn_restaurant)
+        markup.row(back_btn)
+        msg = bot.edit_message_text(
+            chat_id=callback.message.chat.id,
+            message_id=callback.message.message_id,
+            text=f"Выберите способ поиска: 🔍",
+            parse_mode='HTML',
+            reply_markup=markup
+        )
+        
+        
+        
+        
+        # conn = get_conn()
+        # cur = conn.cursor()
+
+        # cur.execute("SELECT name FROM sections")
+        # ls1 = cur.fetchall()  
+
+        # markup = types.InlineKeyboardMarkup()
+        
+        # btn1 = types.InlineKeyboardButton("Закуски🍟", callback_data="cat|Закуски")
+        # btn2 = types.InlineKeyboardButton("Салаты🥗", callback_data="cat|Салаты")
+        # btn3 = types.InlineKeyboardButton("Паста🍝", callback_data="cat|Паста")
+        # btn4 = types.InlineKeyboardButton("Горячие блюда🍽️", callback_data="cat|Горячие блюда")
+        # btn5 = types.InlineKeyboardButton("Бургеры🍔", callback_data="cat|Бургеры")
+        # btn6 = types.InlineKeyboardButton("Пицца🍕", callback_data="cat|Пицца")
+        # btn7 = types.InlineKeyboardButton("Суши🍣", callback_data="cat|Суши")
+        # btn8 = types.InlineKeyboardButton("Десерты🍰", callback_data="cat|Десерты")
+        # btn9 = types.InlineKeyboardButton("Соусы🥫", callback_data="cat|Соусы")
+        # btn10 = types.InlineKeyboardButton("Напитки🥤", callback_data="cat|Напитки")
+        # btn11 = types.InlineKeyboardButton("Завтраки🍳", callback_data="cat|Завтраки")
+        # btn12 = types.InlineKeyboardButton("Супы🍲", callback_data="cat|Супы")
+        
+        
+        # markup.row(btn1, btn2, btn3)      
+        # markup.row(btn4, btn5, btn6)     
+        # markup.row(btn7, btn8, btn9)     
+        # markup.row(btn10, btn11, btn12)   
+        
+        # bot.send_message(callback.message.chat.id, "Выберите категорию блюд:", reply_markup=markup)
+    
+    elif data == "bludo":
         conn = get_conn()
         cur = conn.cursor()
 
@@ -497,15 +544,89 @@ def callback_message(callback):
         markup.row(btn10, btn11, btn12)   
         
         bot.send_message(callback.message.chat.id, "Выберите категорию блюд:", reply_markup=markup)
-        
-        
+    
+    
     elif data.startswith("cat|"):
-        choose_dish(callback)
-      
+        category = data.split("|")[1]
+        
+        conn = get_conn()
+        cur = conn.cursor()
+        
+        cur.execute("SELECT id FROM sections WHERE name = %s", (category,))
+        global cat_id 
+        cat_id = cur.fetchone()[0]
+        
+        cur.close()
+        conn.close()
+        
+        
+        markup = types.InlineKeyboardMarkup()
+        
+        btn1 = types.InlineKeyboardButton("Лучшее соотношение белков/ кбжу", callback_data="sort|ratio")
+        btn2 = types.InlineKeyboardButton("Больше всего белка", callback_data="sort|protein")
+        btn3 = types.InlineKeyboardButton("Меньше всего жиров", callback_data="sort|fat")
+        btn4 = types.InlineKeyboardButton("Меньше всего углеводов", callback_data="sort|carbs")
+        
+        back_btn = types.InlineKeyboardButton("⬅️ Назад", callback_data='back_1')
+        markup.add(btn1)
+        markup.row(btn2)
+        markup.row(btn3, btn4)
+        markup.row(back_btn)
+        
+        bot.send_message(callback.message.chat.id, "Выберите способ сортировки:", reply_markup=markup)
+        
+    elif data.startswith("sort|"):
+        if data == "sort|ratio":
+            criterion = "ratio"
+        elif data == "sort|protein":
+            criterion = "protein"
+        elif data == "sort|fat":
+            criterion = "fat"
+        elif data == "sort|carbs":
+            criterion = "carbs"
+            
+        sorted_bluda = sort_by(cat_id, criterion)
+        markup = types.InlineKeyboardMarkup()
+        
+        for id in sorted_bluda.split("\n"):
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT dish, restaurant, kcal, protein, fat, carbs FROM dishes WHERE id = %s", (id,))
+            res = cur.fetchone()
+            btn = types.InlineKeyboardButton(f"{res[0]}({res[1]}) - белки: {res[3]}, жиры: {res[4]}, углеводы: {res[5]}", callback_data=f"dish|{id}")
+            markup.add(btn)
+            cur.close() 
+            conn.close()
+            
+        bot.send_message(callback.message.chat.id, "Вот топ-5 блюд по вашему запросу:", reply_markup=markup)
+        
+        
+def sort_by(cat_id, criterion):
+    
+    conn = get_conn()
+    cur = conn.cursor()
+    if criterion == "protein":
+        cur.execute("SELECT id FROM dishes WHERE sectionid = %s ORDER BY protein DESC LIMIT 5", (cat_id,))
+    elif criterion == "fat":
+        cur.execute("SELECT id, dish, restaurant, kcal, protein, fat, carbs FROM dishes WHERE sectionid = %s ORDER BY fat ASC LIMIT 5", (cat_id,))
+    elif criterion == "carbs":
+        cur.execute("SELECT id, dish, restaurant,kcal, protein, fat, carbs FROM dishes WHERE sectionid = %s ORDER BY carbs ASC LIMIT 5", (cat_id,))
+    # else:
+    #     cur.execute("SELECT dish, kcal, protein, fat, carbs FROM dishes WHERE sectionid = %s ORDER BY kcal ASC LIMIT 5", (cat_id,))
+        
+    rows = cur.fetchall()
+    if not rows:
+        return "Нет блюд в этой категории 😢"
+    
+    
+    
+    result = "\n".join([f"{row[0]}" for row in rows])
+    return result
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("cat|"))
 def choose_dish(call):
     bot.answer_callback_query(call.id) 
-    category = call.data.split("|")[1]  
+    category = call.data.split("|")[1]
     
     conn = get_conn()
     cur = conn.cursor()
@@ -519,14 +640,14 @@ def choose_dish(call):
     cat_id = row[0]
 
 
-    cur.execute("SELECT dish FROM dishes WHERE sectionid = %s", (cat_id,))
+    cur.execute("SELECT dish, kcal, protein, fat, carbs FROM dishes WHERE sectionid = %s", (cat_id,))
     ls = cur.fetchall()
     if not ls:
         bot.send_message(call.message.chat.id, "Блюд нет 😢")
         return
 
     dishes = "\n".join([dish[0] for dish in ls])
-    bot.send_message(call.message.chat.id, f"Блюда в категории {category}:\n{dishes}")
+    return dishes
 
 def delete_dish(message, user_id):
     conn = get_conn()
