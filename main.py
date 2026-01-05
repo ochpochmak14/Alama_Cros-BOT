@@ -4,10 +4,11 @@ import sqlite3
 import psycopg2
 
 
-bot = telebot.TeleBot('TOKEN')
+bot = telebot.TeleBot('token')
 
-DATABASE_URL = "connection_string"
+DATABASE_URL = "str"
 
+user_dish_map = {}
 
 
 def get_conn():
@@ -91,19 +92,18 @@ def show_menu(message):
         bot.send_message(message.chat.id, cart_text, reply_markup=markup)
 
 
-@bot.message_handler(content_types=['text'])
-def handle_text(message):
-    from normalize_text import normalize_restaurant
+# @bot.message_handler(content_types=['text'])
+# def handle_text(message):
+#     from normalize_text import normalize_restaurant
 
-    text = message.text.strip()
-    restaurant = normalize_restaurant(text)
+#     text = message.text.strip()
+#     restaurant = normalize_restaurant(text)
 
-    if restaurant:
-        ask_for_dish(message.chat.id, restaurant)
-    # else:
-    #     bot.send_message(message.chat.id, "Этого ресторана нет в базе. Напишите его название в разделе предложений, и мы добавим его в будущем.")
-    #     start(message)
-
+#     if restaurant:
+#         ask_for_dish(message.chat.id, restaurant)
+#     else:
+#         bot.send_message(message.chat.id, "Этого ресторана нет в базе. Напишите его название в разделе предложений, и мы добавим его в будущем.")
+#         start(message)
 
 
 
@@ -111,8 +111,9 @@ def add_to_cart(user_id, dish_name, restaurant):
     conn = get_conn()
     cur = conn.cursor()
 
+    # Берём только существующие колонки в dishes
     cur.execute("""
-        SELECT weight, kcal, protein, fat, carbs, allergens  
+        SELECT weight, kcal, protein, fat, carbs
         FROM dishes 
         WHERE dish = %s AND restaurant = %s
     """, (dish_name, restaurant))
@@ -123,9 +124,9 @@ def add_to_cart(user_id, dish_name, restaurant):
         conn.close()
         return "❌ Такого блюда в этом ресторане нет!"
 
-    weight, kcal, protein, fat, carbs, allergens = dish
-    
+    weight, kcal, protein, fat, carbs = dish
 
+    # Проверяем, есть ли блюдо в корзине
     cur.execute("""
         SELECT id, quantity 
         FROM cart_items 
@@ -146,15 +147,16 @@ def add_to_cart(user_id, dish_name, restaurant):
         """, (weight, kcal, protein, fat, carbs, existing[0]))
     else:
         cur.execute("""
-            INSERT INTO cart_items(user_id, dish, restaurant, weight, kcal, protein, fat, carbs, allergens)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (user_id, dish_name, restaurant, weight, kcal, protein, fat, carbs, allergens))
+            INSERT INTO cart_items(user_id, dish, restaurant, weight, kcal, protein, fat, carbs)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (user_id, dish_name, restaurant, weight, kcal, protein, fat, carbs))
 
     conn.commit()
     cur.close()
     conn.close()
 
     return f"✅ {dish_name} ({restaurant}) добавлен в корзину!"
+
 
 
 
@@ -169,8 +171,7 @@ def get_cart(user_id):
             ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY id) AS item_number,
             restaurant,
             dish,
-            quantity,
-            allergens
+            quantity
         FROM cart_items
         WHERE user_id = %s
         ORDER BY id
@@ -185,16 +186,11 @@ def get_cart(user_id):
 
     text = "🛒 Ваша корзина:\n\n"
     for row in rows:
-        item_number, restaurant, dish, quantity, allergens = row
+        item_number, restaurant, dish, quantity= row
 
-       
-        if allergens and allergens.strip():
-            allergens_str = f"⚠️ Аллергены: {allergens}"
-        else:
-            allergens_str = "✅ Без аллергенов"
+
 
         text += f"{item_number}. {dish} ({restaurant}) ×{quantity}\n"
-        text += f"{allergens_str}\n\n"
 
     return text
 
@@ -371,7 +367,7 @@ def callback_message(callback):
         conn = get_conn()
         cur = conn.cursor()
         cur.execute(
-            "SELECT restaurant, dish, weight, kcal, protein, fat, carbs, allergens FROM dishes WHERE id = %s",
+            "SELECT restaurant, dish, weight, kcal, protein, fat, carbs, allergenes FROM dishes WHERE id = %s",
             (dishes_id, )
         )
         row = cur.fetchone()
@@ -389,9 +385,9 @@ def callback_message(callback):
         markup.row(add_btn)
 
         if row:
-            restaurant_name, dish_name, weight, kcal, protein, fat, carbs, allergens = row
+            restaurant_name, dish_name, weight, kcal, protein, fat, carbs, allergenes = row
 
-            allergens_str = f"Аллергены - {allergens}"
+            allergenes_str = f"Аллергены - {allergenes}"
 
             bot.send_message(
                 callback.message.chat.id,
@@ -404,7 +400,7 @@ def callback_message(callback):
                 f"Жиры: {fat} г\n"
                 f"Углеводы: {carbs} г\n"
                 f"------------------\n"
-                f"⚠️ {allergens_str}"
+                f"⚠️ {allergenes_str}"
                 ,
                 reply_markup=markup
             )
@@ -610,118 +606,143 @@ def callback_message(callback):
             criterion = "fat"
         elif data == "sort|carbs":
             criterion = "carbs"
+        else:
+            return
 
-        # Получаем список блюд (их реальные id) по критерию
-        sorted_ids = sort_by(cat_id, criterion)  # возвращает список id
+        sorted_ids = sort_by(cat_id, criterion)
         if not sorted_ids:
             bot.send_message(callback.message.chat.id, "Блюд нет 😢")
             return
 
-        text = "Выберите блюдо для добавления в корзину. Напишите номер ⬇️\n\n"
-        dish_map = {}  # условный номер -> реальный id блюда
+        text = "Выберите блюдо для добавления в корзину.\nНапишите номер ⬇️\n\n"
+        dish_map = {}
         counter = 1
 
+        conn = get_conn()
+        cur = conn.cursor()
+
         for dish_id in sorted_ids:
-            conn = get_conn()
-            cur = conn.cursor()
             cur.execute(
-                "SELECT dish, restaurant, kcal, protein, fat, carbs FROM dishes WHERE id = %s", 
+                "SELECT dish, restaurant, kcal, protein, fat, carbs FROM dishes WHERE id = %s",
                 (dish_id,)
             )
             row = cur.fetchone()
-            cur.close()
-            conn.close()
-
             if not row:
                 continue
 
             dish_name, restaurant_name, kcal, protein, fat, carbs = row
+
             text += (
                 f"{counter}. {dish_name} ({restaurant_name})\n"
                 f"   {kcal} ккал | Б: {protein} г | Ж: {fat} г | У: {carbs} г\n\n"
             )
-            # связываем условный номер с реальным id
+
             dish_map[counter] = dish_id
             counter += 1
 
-        # Сохраняем маппинг для пользователя
-        if 'user_dish_map' not in globals():
-            global user_dish_map
-            user_dish_map = {}
+        cur.close()
+        conn.close()
+
+        # сохраняем мапу ОДИН РАЗ
         user_dish_map[callback.message.chat.id] = dish_map
 
         bot.send_message(callback.message.chat.id, text)
 
-@bot.message_handler(func=lambda message: message.chat.id in user_dish_map)
+
+# ===== ЛОВИМ ВВОД НОМЕРА =====
+@bot.message_handler(content_types=['text'])
 def add_by_number(message):
+    chat_id = message.chat.id
+
+    if chat_id not in user_dish_map:
+        return
+
     try:
         num = int(message.text.strip())
     except ValueError:
-        bot.send_message(message.chat.id, "❌ Введите номер блюда цифрой!")
+        bot.send_message(chat_id, "❌ Введите номер блюда цифрой!")
         return
 
-    dish_map = user_dish_map.get(message.chat.id, {})
+    dish_map = user_dish_map[chat_id]
+
     if num not in dish_map:
-        bot.send_message(message.chat.id, "❌ Такого номера нет в списке!")
+        bot.send_message(chat_id, "❌ Такого номера нет в списке!")
         return
 
     dish_id = dish_map[num]
 
-    # Используем новый метод добавления по dish_id
-    result = add_to_cart_by_id(message.from_user.id, dish_id)
-    bot.send_message(message.chat.id, result)
+    result = add_to_cart_by_id(chat_id, dish_id)
+    bot.send_message(chat_id, result)
 
-    # очищаем мап после добавления
-    user_dish_map.pop(message.chat.id, None)
-
-
+    del user_dish_map[chat_id]
 def add_to_cart_by_id(user_id, dish_id):
-    conn = get_conn()
-    cur = conn.cursor()
+    conn = None
+    cur = None
 
-    cur.execute("""
-        SELECT dish, restaurant, weight, kcal, protein, fat, carbs, allergens
-        FROM dishes 
-        WHERE id = %s
-    """, (dish_id,))
-    row = cur.fetchone()
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
 
-    if not row:
-        cur.close()
-        conn.close()
-        return "❌ Блюдо не найдено!"
-
-    dish_name, restaurant_name, weight, kcal, protein, fat, carbs, allergens = row
-
-    # Проверяем, есть ли блюдо в корзине
-    cur.execute("""
-        SELECT id, quantity 
-        FROM cart_items 
-        WHERE user_id = %s AND dish = %s AND restaurant = %s
-    """, (user_id, dish_name, restaurant_name))
-    existing = cur.fetchone()
-
-    if existing:
+        # Берём колонки из таблицы dishes, включая weight
         cur.execute("""
-            UPDATE cart_items
-            SET quantity = quantity + 1,
-                weight = weight + %s,
-                kcal = kcal + %s,
-                protein = protein + %s,
-                fat = fat + %s,
-                carbs = carbs + %s
+            SELECT dish, restaurant, weight, kcal, protein, fat, carbs
+            FROM dishes
             WHERE id = %s
-        """, (weight, kcal, protein, fat, carbs, existing[0]))
-    else:
-        cur.execute("""
-            INSERT INTO cart_items(user_id, dish, restaurant, weight, kcal, protein, fat, carbs, allergens)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (user_id, dish_name, restaurant_name, weight, kcal, protein, fat, carbs, allergens))
+        """, (dish_id,))
+        row = cur.fetchone()
 
-    conn.commit()
-    cur.close()
-    conn.close()
-    return f"✅ {dish_name} ({restaurant_name}) добавлен в корзину!"
+        if not row:
+            return "❌ Блюдо не найдено!"
+
+        dish_name, restaurant_name, weight, kcal, protein, fat, carbs = row
+
+        # Если weight пустое (NULL) — ставим 0
+        if weight is None:
+            weight = 0
+
+        # Проверяем, есть ли уже блюдо в корзине
+        cur.execute("""
+            SELECT id
+            FROM cart_items
+            WHERE user_id = %s AND dish = %s AND restaurant = %s
+        """, (user_id, dish_name, restaurant_name))
+        existing = cur.fetchone()
+
+        if existing:
+            cur.execute("""
+                UPDATE cart_items
+                SET quantity = quantity + 1,
+                    weight = weight + %s,
+                    kcal = kcal + %s,
+                    protein = protein + %s,
+                    fat = fat + %s,
+                    carbs = carbs + %s
+                WHERE id = %s
+            """, (weight, kcal, protein, fat, carbs, existing[0]))
+        else:
+            cur.execute("""
+                INSERT INTO cart_items
+                (user_id, dish, restaurant, quantity, weight, kcal, protein, fat, carbs)
+                VALUES (%s, %s, %s, 1, %s, %s, %s, %s, %s)
+            """, (
+                user_id, dish_name, restaurant_name,
+                weight, kcal, protein, fat, carbs
+            ))
+
+        conn.commit()
+        return f"✅ {dish_name} ({restaurant_name}) добавлен в корзину!"
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print("Ошибка add_to_cart_by_id:", e)
+        return "❌ Ошибка при добавлении блюда"
+
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
 
 
 def sort_by(cat_id, criterion):
@@ -931,7 +952,7 @@ def dish_handling_func_1(message, restaurant):
         if res:
             dishes_id = res[0]
             cur.execute(
-                "SELECT dish, restaurant, weight, kcal, protein, fat, carbs, allergens FROM dishes WHERE id = %s",
+                "SELECT dish, restaurant, weight, kcal, protein, fat, carbs, allergenes FROM dishes WHERE id = %s",
                 (dishes_id,)
             )
             row = cur.fetchone()
@@ -949,8 +970,8 @@ def dish_handling_func_1(message, restaurant):
             markup.row(add_btn)
 
             if row:
-                dish_name, restaurant_name, weight, kcal, protein, fat, carbs, allergens = row
-                allergens_str = f"Аллергены - {allergens}"
+                dish_name, restaurant_name, weight, kcal, protein, fat, carbs, allergenes = row
+                allergenes_str = f"Аллергены - {allergenes}"
                 bot.send_message(
                     message.chat.id,
                     f"Ресторан - {restaurant_name}\n"
@@ -961,7 +982,7 @@ def dish_handling_func_1(message, restaurant):
                     f"Белки: {protein} г\n"
                     f"Жиры: {fat} г\n"
                     f"Углеводы: {carbs} г\n"
-                    f"⚠️ {allergens_str}",
+                    f"⚠️ {allergenes_str}",
                     reply_markup=markup
                 )
                 add_to_history(message.from_user.id, dish_name, restaurant_name)
