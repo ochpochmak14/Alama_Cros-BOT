@@ -4,7 +4,7 @@ import sqlite3
 import psycopg2
 
 
-bot = telebot.TeleBot('TOKEN')
+bot = telebot.TeleBot('tok')
 
 DATABASE_URL = "str"
 
@@ -790,7 +790,7 @@ def callback_message(callback):
         cur.execute(f"""
             SELECT id, dish, protein, fat, carbs, kcal
             FROM dishes
-            WHERE restaurant = %s
+            WHERE restaurant = %s AND sectionid <> 9 AND sectionid <> 10
             ORDER BY {order}
             LIMIT 5
         """, (restaurant_name,))
