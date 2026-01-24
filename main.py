@@ -5,13 +5,15 @@ import psycopg2
 
 
 import os
-bot = telebot.TeleBot(os.getenv("BOT_TOKEN")) 
 
+bot = telebot.TeleBot(os.getenv("BOT_TOKEN"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 user_dish_map = {}
 
 user_restaurant = {}
+
+user_state = {}
 
 RESTAURANT_MAP = {
     "mcdonalds": "McDonald's",
@@ -19,7 +21,9 @@ RESTAURANT_MAP = {
     "tanuki": "Tanuki",
     "burgerk": "Burger King",
     "kfc": "KFC",
-    "tomyumbar": "TomYumBar"
+    "tomyumbar": "TomYumBar",
+    "popeyes": "Popeyes",
+    'Додо пицца': "Додо пицца"
 }
 
 
@@ -172,6 +176,9 @@ def set_agreement(user_id, accepted: bool):
 
 
 def show_menu1(chat_id, user_id):
+    
+    bot.clear_step_handler_by_chat_id(chat_id=chat_id)
+    
     reply_markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     menu_btn = types.KeyboardButton("📋 Меню")
     cart_btn = types.KeyboardButton("🛒 Показать корзину")
@@ -216,6 +223,9 @@ def show_menu1(chat_id, user_id):
 
 @bot.message_handler(func=lambda message: message.text == "📋 Меню")
 def show_menu(message):
+    
+    bot.clear_step_handler_by_chat_id(chat_id=message.chat.id)
+    
     reply_markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     menu_btn = types.KeyboardButton("📋 Меню")
     cart_btn = types.KeyboardButton("🛒 Показать корзину")
@@ -657,12 +667,16 @@ def callback_message(callback):
         burger_btn = types.InlineKeyboardButton("Burger King", callback_data="rest|burgerk")
         kfc_btn = types.InlineKeyboardButton("KFC", callback_data="rest|kfc")
         tomyum_btn = types.InlineKeyboardButton("TomYumBar", callback_data="rest|tomyumbar")
-        
+        popeyes_btn = types.InlineKeyboardButton("Popeyes", callback_data="rest|popeyes")
+        dodo_btn = types.InlineKeyboardButton("Додо пицца", callback_data="rest|Додо пицца")
+
         back_btn = types.InlineKeyboardButton("⬅️ Назад", callback_data='back_1')
         
    
         markup.row(mcdonald_btn, bella_btn, tanuki_btn)
         markup.row(burger_btn, kfc_btn, tomyum_btn)
+        markup.row(popeyes_btn, dodo_btn)
+        
         markup.row(back_btn)
         
         bot.edit_message_text(
@@ -716,7 +730,11 @@ def callback_message(callback):
             types.InlineKeyboardButton("Burger King", callback_data="rest|burgerk"),
             types.InlineKeyboardButton("KFC", callback_data="rest|kfc"),
             types.InlineKeyboardButton("TomYumBar", callback_data="rest|tomyumbar")
+            
         )
+        
+        
+        
         markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data="back_1"))
 
         bot.edit_message_text(
@@ -733,7 +751,7 @@ def callback_message(callback):
         bot.answer_callback_query(call.id)
 
         restaurant = call.data.split("|")[1]
-        user_restaurant[call.from_user.id] = restaurant  # сохраняем ресторан
+        user_restaurant[call.from_user.id] = restaurant  
 
         markup = types.InlineKeyboardMarkup()
         markup.row(
@@ -852,7 +870,9 @@ def callback_message(callback):
         conn.close()
 
         text += "\n👉 Отправьте <b>ID блюда</b>, чтобы добавить в корзину"
-
+        
+        
+        
         bot.send_message(
             callback.message.chat.id,
             text,
@@ -913,7 +933,7 @@ def callback_message(callback):
                 f"-------\n"
                 f"ID: <code>{d[0]}</code>\n\n"
             )
-
+        user_state[call.from_user.id] = "WAIT_DISH_ID"
         bot.send_message(
             call.message.chat.id,
             text + "👉 Отправьте ID блюда, чтобы добавить в корзину",
@@ -922,26 +942,37 @@ def callback_message(callback):
 
 
 
+
 @bot.message_handler(func=lambda message: message.text.isdigit())
 def add_by_id(message):
+    if user_state.get(message.from_user.id) != "WAIT_DISH_ID":
+        return  
+    
     dish_id = int(message.text)
     result = add_to_cart_by_id(message.from_user.id, dish_id)
     bot.send_message(message.chat.id, result)
+    
+    user_state[message.from_user.id] = None
 
 
 
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
+    from normalize_text import normalize_restaurant
+    
     text = message.text
     user_id = message.from_user.id
     
-    if text in ["Додо пицца", "dodo pizza", "Dodo pizza", "Додо", "dodo", "Dodo", "додо", "пиццы", "Пиццы"]:
-        text = "Додо пицца"
-        ask_for_dish(message.chat.id, text)
+    # if text in ["Додо пицца", "dodo pizza", "Dodo pizza", "Додо", "dodo", "Dodo", "додо", "пиццы", "Пиццы"]:
+    #     text = "Додо пицца"
+    #     ask_for_dish(message.chat.id, text)
         
-    if text in ["Попайс", "попайс", "Popeyes", "popeyes", "Попис", "Popys"]:
-        text = "Popeyes"
-        ask_for_dish(message.chat.id, text)
+    # if text in ["Попайс", "попайс", "Popeyes", "popeyes", "Попис", "Popys"]:
+    #     text = "Popeyes"
+    #     ask_for_dish(message.chat.id, text)
+        
+    text = normalize_restaurant(text)    
+    ask_for_dish(message.chat.id, text)
     
     
 
