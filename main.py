@@ -4,9 +4,10 @@ import sqlite3
 import psycopg2
 
 
-bot = telebot.TeleBot('TOKEN')
+import os
+bot = telebot.TeleBot(os.getenv("BOT_TOKEN")) 
 
-DATABASE_URL = "str"
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 user_dish_map = {}
 
@@ -25,7 +26,7 @@ RESTAURANT_MAP = {
 def get_conn():
     return psycopg2.connect(DATABASE_URL)
 
-
+#Додо пицца
 
 
 @bot.message_handler(commands=['start'])
@@ -509,7 +510,7 @@ def callback_message(callback):
     user_id = callback.from_user.id
     data = callback.data
 
-    if data in ['mcdonalds', 'kfc', 'burgerk', 'tanuki', 'tomyumbar', 'popeyes']:
+    if data in ['mcdonalds', 'kfc', 'burgerk', 'tanuki', 'tomyumbar', 'popeyes', "Додо пицца"]:
         from renaming_1 import rename
         dt2 = rename(callback)
         ask_for_dish(callback.message.chat.id, dt2, callback.message.message_id)
@@ -929,6 +930,20 @@ def add_by_id(message):
 
 
 
+@bot.message_handler(content_types=['text'])
+def handle_text(message):
+    text = message.text
+    user_id = message.from_user.id
+    
+    if text in ["Додо пицца", "dodo pizza", "Dodo pizza", "Додо", "dodo", "Dodo", "додо", "пиццы", "Пиццы"]:
+        text = "Додо пицца"
+        ask_for_dish(message.chat.id, text)
+        
+    if text in ["Попайс", "попайс", "Popeyes", "popeyes", "Попис", "Popys"]:
+        text = "Popeyes"
+        ask_for_dish(message.chat.id, text)
+    
+    
 
 
 @bot.message_handler(content_types=['text'])
@@ -956,6 +971,7 @@ def add_by_number(message):
     bot.send_message(chat_id, result)
 
     del user_dish_map[chat_id]
+    
 def add_to_cart_by_id(user_id, dish_id):
     conn = None
     cur = None
@@ -1277,6 +1293,7 @@ def dish_handling_func_1(message, restaurant):
 
     cur.close()
     conn.close()
+
 
 
 
