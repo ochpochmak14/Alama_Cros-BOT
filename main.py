@@ -4,7 +4,7 @@ import sqlite3
 import psycopg2
 
 
-bot = telebot.TeleBot('TOK')
+bot = telebot.TeleBot('TOKEN')
 
 DATABASE_URL = "str"
 
@@ -28,17 +28,24 @@ def get_conn():
 
 
 
-
-
-
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.from_user.id
+    chat_id = message.chat.id
+    # print(user_id)
+    
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT accepted FROM user_agreements WHERE user_id = %s", (user_id,))
+    row = cur.fetchone()  
+    # print(row[0])
+    cur.close()
+    conn.close()
 
-   
-    if not has_accepted_agreement(user_id):
-        send_agreement(message.chat.id)
-        return  
+    if not row or row[0] == 0: 
+        send_agreement(user_id, chat_id)
+        return
+
 
     bot.clear_step_handler_by_chat_id(message.chat.id)
 
@@ -84,8 +91,16 @@ def start(message):
 
 
 
+def send_agreement(user_id, chat_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT accepted FROM user_agreements WHERE user_id = %s
+    """, (user_id, ))
+    row = cur.fetchone()
+    conn.close()  
+    cur.close()
 
-def send_agreement(chat_id):
     markup = types.InlineKeyboardMarkup()
     markup.row(
         types.InlineKeyboardButton("✅ Согласен", callback_data="agree_yes"),
@@ -93,14 +108,13 @@ def send_agreement(chat_id):
     )
 
     with open("Пользовательское соглашение.docx", "rb") as f:
-        bot.send_document(
-            chat_id,
-            f,
-            caption="📄 Пользовательское соглашение\n\n"
-                    "Пожалуйста, ознакомьтесь и подтвердите согласие.",
-            reply_markup=markup
+            bot.send_document(
+                chat_id,  
+                document=f,
+                caption="📄 Пользовательское соглашение\n\n"
+                        "Пожалуйста, ознакомьтесь и подтвердите согласие.",
+                reply_markup=markup
         )
-
 
 
 
@@ -137,25 +151,109 @@ def has_accepted_agreement(user_id):
     conn.close()
     return row is not None and row[0] is True
 
-
 def set_agreement(user_id, accepted: bool):
     conn = get_conn()
     cur = conn.cursor()
+    
     cur.execute("""
         INSERT INTO user_agreements (user_id, accepted)
         VALUES (%s, %s)
         ON CONFLICT (user_id)
         DO UPDATE SET accepted = EXCLUDED.accepted,
                       accepted_at = NOW()
-    """, (user_id, accepted))
+    """, (user_id, int(accepted))) 
+    
     conn.commit()
     cur.close()
     conn.close()
 
 
+
+
+def show_menu1(chat_id, user_id):
+    reply_markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    menu_btn = types.KeyboardButton("📋 Меню")
+    cart_btn = types.KeyboardButton("🛒 Показать корзину")
+    reply_markup.add(menu_btn, cart_btn)
+
+    
+    inline_markup = types.InlineKeyboardMarkup()
+    history_btn = types.InlineKeyboardButton("📜 История поиска", callback_data="history")
+    mcdonald_btn = types.InlineKeyboardButton("McDonald's", callback_data='mcdonalds')
+    popeyes_btn = types.InlineKeyboardButton("POPEYES", callback_data="popeyes")
+    kfc_btn = types.InlineKeyboardButton("KFC", callback_data='kfc')
+    burgerk_btn = types.InlineKeyboardButton("Burger King", callback_data='burgerk')
+    tanuki_btn = types.InlineKeyboardButton("Tanuki", callback_data='tanuki')
+    starbucks_btn = types.InlineKeyboardButton("TomYumBar", callback_data='tomyumbar')
+    cart = types.InlineKeyboardButton("🛒 Показать корзину", callback_data='show_cart')
+    offers_btn = types.InlineKeyboardButton("📝 Раздел предложений", callback_data="offers")
+    cats_btn = types.InlineKeyboardButton("📙 Выбор по категориям", callback_data="cats")
+
+   
+    inline_markup.add(mcdonald_btn, popeyes_btn, kfc_btn, burgerk_btn, tanuki_btn, starbucks_btn)
+    inline_markup.row(cart)
+    inline_markup.row(history_btn)
+    inline_markup.row(offers_btn)
+    inline_markup.row(cats_btn)
+
+    bot.send_message(
+        chat_id,
+        'Выберите ресторан из списка или введите название вручную',
+        parse_mode='HTML',
+        reply_markup=inline_markup
+    )
+
+    
+    bot.send_message(
+        chat_id,
+        "Используйте кнопки ниже для быстрого доступа 👇",
+        reply_markup=reply_markup
+    )
+
+
+
+
 @bot.message_handler(func=lambda message: message.text == "📋 Меню")
 def show_menu(message):
-    start(message)
+    reply_markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    menu_btn = types.KeyboardButton("📋 Меню")
+    cart_btn = types.KeyboardButton("🛒 Показать корзину")
+    reply_markup.add(menu_btn, cart_btn)
+
+    
+    inline_markup = types.InlineKeyboardMarkup()
+    history_btn = types.InlineKeyboardButton("📜 История поиска", callback_data="history")
+    mcdonald_btn = types.InlineKeyboardButton("McDonald's", callback_data='mcdonalds')
+    popeyes_btn = types.InlineKeyboardButton("POPEYES", callback_data="popeyes")
+    kfc_btn = types.InlineKeyboardButton("KFC", callback_data='kfc')
+    burgerk_btn = types.InlineKeyboardButton("Burger King", callback_data='burgerk')
+    tanuki_btn = types.InlineKeyboardButton("Tanuki", callback_data='tanuki')
+    starbucks_btn = types.InlineKeyboardButton("TomYumBar", callback_data='tomyumbar')
+    cart = types.InlineKeyboardButton("🛒 Показать корзину", callback_data='show_cart')
+    offers_btn = types.InlineKeyboardButton("📝 Раздел предложений", callback_data="offers")
+    cats_btn = types.InlineKeyboardButton("📙 Выбор по категориям", callback_data="cats")
+
+   
+    inline_markup.add(mcdonald_btn, popeyes_btn, kfc_btn, burgerk_btn, tanuki_btn, starbucks_btn)
+    inline_markup.row(cart)
+    inline_markup.row(history_btn)
+    inline_markup.row(offers_btn)
+    inline_markup.row(cats_btn)
+
+    bot.send_message(
+        message.chat.id,
+        'Выберите ресторан из списка или введите название вручную',
+        parse_mode='HTML',
+        reply_markup=inline_markup
+    )
+
+    
+    bot.send_message(
+        message.chat.id,
+        "Используйте кнопки ниже для быстрого доступа 👇",
+        reply_markup=reply_markup
+    )
+
     
     
 @bot.message_handler(func=lambda message: message.text == "🛒 Показать корзину")
@@ -420,7 +518,10 @@ def callback_message(callback):
         show_history(callback)
     
     elif data == 'back_1':
-        start(callback.message)
+        user_id = callback.from_user.id
+        chat_id = callback.message.chat.id
+        show_menu1(chat_id, user_id)
+
 
     elif data.startswith("dish|"):
         _, dishes_id = data.split("|", 1)
