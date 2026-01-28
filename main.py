@@ -418,29 +418,98 @@ def get_cart_totals(user_id):
 
 
 
-
 def ask_for_dish(chat_id, restaurant, message_id=None):
     markup = types.InlineKeyboardMarkup()
     back_btn = types.InlineKeyboardButton("⬅️ Назад", callback_data='back_1')
     markup.add(back_btn)
 
+    if restaurant:
+        text = f"Введите название блюда из <b>{restaurant}</b>"
+    else:
+        text = "❌ Некорректный ресторан"
+
     if message_id:
         msg = bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
-            text=f"Введите название блюда из <b>{restaurant}</b>",
+            text=text,
             parse_mode='HTML',
             reply_markup=markup
         )
     else:
         msg = bot.send_message(
             chat_id,
-            f"Введите название блюда из <b>{restaurant}</b>",
+            text,
             parse_mode='HTML',
             reply_markup=markup
         )
 
-    bot.register_next_step_handler(msg, dish_handling_func_1, restaurant)
+    # Только если ресторан корректный, регистрируем next_step_handler
+    if restaurant:
+        bot.register_next_step_handler(msg, dish_handling_func_1, restaurant)
+
+       
+
+        
+        # message = msg
+        # reply_markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        # menu_btn = types.KeyboardButton("📋 Меню")
+        # cart_btn = types.KeyboardButton("🛒 Показать корзину")
+        # reply_markup.add(menu_btn, cart_btn)
+
+        
+        # inline_markup = types.InlineKeyboardMarkup()
+        # history_btn = types.InlineKeyboardButton("📜 История поиска", callback_data="history")
+        # mcdonald_btn = types.InlineKeyboardButton("McDonald's", callback_data='mcdonalds')
+        # popeyes_btn = types.InlineKeyboardButton("POPEYES", callback_data="popeyes")
+        # kfc_btn = types.InlineKeyboardButton("KFC", callback_data='kfc')
+        # burgerk_btn = types.InlineKeyboardButton("Burger King", callback_data='burgerk')
+        # tanuki_btn = types.InlineKeyboardButton("Tanuki", callback_data='tanuki')
+        # starbucks_btn = types.InlineKeyboardButton("TomYumBar", callback_data='tomyumbar')
+        # cart = types.InlineKeyboardButton("🛒 Показать корзину", callback_data='show_cart')
+        # offers_btn = types.InlineKeyboardButton("📝 Раздел предложений", callback_data="offers")
+        # cats_btn = types.InlineKeyboardButton("📙 Выбор по категориям", callback_data="cats")
+
+    
+        # inline_markup.add(mcdonald_btn, popeyes_btn, kfc_btn, burgerk_btn, tanuki_btn, starbucks_btn)
+        # inline_markup.row(cart)
+        # inline_markup.row(history_btn)
+        # inline_markup.row(offers_btn)
+        # inline_markup.row(cats_btn)
+
+        # bot.send_message(
+        #     message.chat.id,
+        #     'Выберите ресторан из списка или введите название вручную',
+        #     parse_mode='HTML',
+        #     reply_markup=inline_markup
+        # )
+
+        
+        # bot.send_message(
+        #     message.chat.id,
+        #     "Используйте кнопки ниже для быстрого доступа 👇",
+        #     reply_markup=reply_markup
+        # )
+            
+
+
+# @bot.message_handler(content_types=['text'])
+# def handle_text(message):
+#     from normalize_text import normalize_restaurant
+    
+#     text = message.text
+#     user_id = message.from_user.id
+    
+#     if text in ["Додо пицца", "dodo pizza", "Dodo pizza", "Додо", "dodo", "Dodo", "додо", "пиццы", "Пиццы"]:
+#         text = "Додо пицца"
+#         ask_for_dish(message.chat.id, text)
+        
+#     # if text in ["Попайс", "попайс", "Popeyes", "popeyes", "Попис", "Popys"]:
+#     #     text = "Popeyes"
+#     #     ask_for_dish(message.chat.id, text)
+#     else:   
+#         text = normalize_restaurant(text)    
+#         ask_for_dish(message.chat.id, text)
 
 
 def get_last_history(user_id, limit=5):
@@ -514,16 +583,18 @@ def show_history(callback):
 
 
 
-@bot.callback_query_handler(func=lambda callback: True)
+@bot.callback_query_handler(func=lambda c: True)
 def callback_message(callback):
     bot.answer_callback_query(callback.id)  
     user_id = callback.from_user.id
     data = callback.data
+    # print(data)
 
-    if data in ['mcdonalds', 'kfc', 'burgerk', 'tanuki', 'tomyumbar', 'popeyes', "Додо пицца"]:
+    if data in ['mcdonalds', 'kfc', 'burgerk', 'tanuki', 'tomyumbar', 'popeyes', 'Додо пицца']:
         from renaming_1 import rename
         dt2 = rename(callback)
-        ask_for_dish(callback.message.chat.id, dt2, callback.message.message_id)
+        # print(dt2)
+        ask_for_dish(callback.message.chat.id, dt2)
 
     elif data == "history":
         show_history(callback)
@@ -956,6 +1027,25 @@ def add_by_id(message):
 
 
 
+# @bot.message_handler(content_types=['text'])
+# def handle_text(message):
+#     from normalize_text import normalize_restaurant
+    
+#     text = message.text
+#     user_id = message.from_user.id
+    
+#     # if text in ["Додо пицца", "dodo pizza", "Dodo pizza", "Додо", "dodo", "Dodo", "додо", "пиццы", "Пиццы"]:
+#     #     text = "Додо пицца"
+#     #     ask_for_dish(message.chat.id, text)
+        
+#     # if text in ["Попайс", "попайс", "Popeyes", "popeyes", "Попис", "Popys"]:
+#     #     text = "Popeyes"
+#     #     ask_for_dish(message.chat.id, text)
+        
+#     text = normalize_restaurant(text)    
+#     ask_for_dish(message.chat.id, text)
+    
+    
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
     from normalize_text import normalize_restaurant
@@ -963,18 +1053,17 @@ def handle_text(message):
     text = message.text
     user_id = message.from_user.id
     
-    # if text in ["Додо пицца", "dodo pizza", "Dodo pizza", "Додо", "dodo", "Dodo", "додо", "пиццы", "Пиццы"]:
-    #     text = "Додо пицца"
-    #     ask_for_dish(message.chat.id, text)
+    if text in ["Додо пицца", "dodo pizza", "Dodo pizza", "Додо", "dodo", "Dodo", "додо", "пиццы", "Пиццы"]:
+        text = "Додо пицца"
+        ask_for_dish(message.chat.id, text)
         
     # if text in ["Попайс", "попайс", "Popeyes", "popeyes", "Попис", "Popys"]:
     #     text = "Popeyes"
     #     ask_for_dish(message.chat.id, text)
-        
-    text = normalize_restaurant(text)    
-    ask_for_dish(message.chat.id, text)
-    
-    
+    else:   
+        text = normalize_restaurant(text)    
+        ask_for_dish(message.chat.id, text)
+
 
 
 @bot.message_handler(content_types=['text'])
@@ -1003,6 +1092,11 @@ def add_by_number(message):
 
     del user_dish_map[chat_id]
     
+    
+    
+
+
+
 def add_to_cart_by_id(user_id, dish_id):
     conn = None
     cur = None
@@ -1324,7 +1418,6 @@ def dish_handling_func_1(message, restaurant):
 
     cur.close()
     conn.close()
-
 
 
 

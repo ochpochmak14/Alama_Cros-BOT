@@ -76,7 +76,12 @@ canonical = {
     "попайес": "Popeyes",
     "попаес": "Popeyes",
     "popeyes chicken": "Popeyes",
-    "popeyes louisiana kitchen": "Popeyes"
+    "popeyes louisiana kitchen": "Popeyes",
+    
+    "Додо": "Додо пицца",
+    "Dodo": "Додо пицца",
+    "Dodo Pizza": "Додо пицца",
+    "Додо пицца": "Додо пицца",
 }
 
 
@@ -88,6 +93,6 @@ def normalize_restaurant(name: str):
     if name in canonical:
         return canonical[name]
 
-    if score >= 70:
+    if score >= 60:
         return canonical[best_match.lower()]
     return None
