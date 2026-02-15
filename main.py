@@ -632,7 +632,17 @@ def callback_message(callback):
             restaurant_name, dish_name, weight, kcal, protein, fat, carbs, allergenes = row
 
             allergenes_str = f"Аллергены - {allergenes}"
-
+            if restaurant_name == "Додо пицца":
+                website = "Сайт ресторана: https://drive.google.com/file/d/1GWaKPdU7t5URgMkh_X4pJqmyZuGr9FdQ/view"
+            if restaurant_name == "McDonald's":
+                website = "Сайт ресторана: https://im.kz/products"
+            if restaurant_name == "Tanuki":
+                website = "Сайт ресторана: https://tanukifamily.kz/tanuki_kz/almaty/"
+            
+            if allergenes_str is None or allergenes_str.strip() == "":
+                allergenes_str = "Отсутствуют данные, уточните пожалуйста у ресторана."
+            if weight is None:
+                weight = "Отсутствуют данные, уточните пожалуйста у ресторана."
             bot.send_message(
                 callback.message.chat.id,
                 f"Ресторан - {restaurant_name}\n"
@@ -644,6 +654,7 @@ def callback_message(callback):
                 f"Жиры: {fat} г\n"
                 f"Углеводы: {carbs} г\n"
                 f"------------------\n"
+                f"{website}\n"
                 f"⚠️ {allergenes_str}"
                 ,
                 reply_markup=markup
