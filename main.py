@@ -9,6 +9,8 @@ import os
 bot = telebot.TeleBot(os.getenv("BOT_TOKEN"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+
+
 user_dish_map = {}
 
 user_restaurant = {}
@@ -630,15 +632,18 @@ def callback_message(callback):
 
         if row:
             restaurant_name, dish_name, weight, kcal, protein, fat, carbs, allergenes = row
-
+            if allergenes is None:
+                allergenes = "Информация об аллергенах не опубликована производителем."
             allergenes_str = f"Аллергены - {allergenes}"
+            website = ""
             if restaurant_name == "Додо пицца":
-                website = "Сайт ресторана: https://drive.google.com/file/d/1GWaKPdU7t5URgMkh_X4pJqmyZuGr9FdQ/view"
+                website = "Ознакомиться со всеми аллергенами: https://drive.google.com/file/d/1GWaKPdU7t5URgMkh_X4pJqmyZuGr9FdQ/view"
             if restaurant_name == "McDonald's":
-                website = "Сайт ресторана: https://im.kz/products"
+                website = "Ознакомиться со всеми аллергенами: https://im.kz/products"
             if restaurant_name == "Tanuki":
-                website = "Сайт ресторана: https://tanukifamily.kz/tanuki_kz/almaty/"
-            
+                website = "Ознакомиться со всеми аллергенами: https://tanukifamily.kz/tanuki_kz/almaty/"
+            if restaurant_name == "Hardee's":
+                website = "Ознакомиться со всеми аллергенами: https://drive.google.com/file/d/1U_9uKD4QqIVHrp7z4XEq9b3Yuls6orKV/view?usp=sharing"
             if allergenes_str is None or allergenes_str.strip() == "":
                 allergenes_str = "Отсутствуют данные, уточните пожалуйста у ресторана."
             if weight is None:
@@ -1068,6 +1073,14 @@ def handle_text(message):
         text = "Додо пицца"
         ask_for_dish(message.chat.id, text)
         
+    elif text in ["вендис", "Вендис", "Wendys", "wendys", "WENDYS", "wendy's", "Wendy's", "Wendy", "wendy"]:
+        text = "Wendy's"
+        ask_for_dish(message.chat.id, text)
+        
+    elif text in ["Hardee's", "hardees", "Hardes", "hardes", "Хардис", "хардис", "ХАРДИС", "харди", "хард"]:
+        text = "Hardee's"
+        ask_for_dish(message.chat.id, text)
+        
     # if text in ["Попайс", "попайс", "Popeyes", "popeyes", "Попис", "Popys"]:
     #     text = "Popeyes"
     #     ask_for_dish(message.chat.id, text)
@@ -1403,7 +1416,18 @@ def dish_handling_func_1(message, restaurant):
 
             if row:
                 dish_name, restaurant_name, weight, kcal, protein, fat, carbs, allergenes = row
+                if allergenes is None:
+                    allergenes = "Информация об аллергенах не опубликована производителем."
                 allergenes_str = f"Аллергены - {allergenes}"
+                website = ""
+                if restaurant_name == "Додо пицца":
+                    website = "Ознакомиться со всеми аллергенами: https://drive.google.com/file/d/1GWaKPdU7t5URgMkh_X4pJqmyZuGr9FdQ/view"
+                if restaurant_name == "Hardee's":
+                    website = "Ознакомиться со всеми аллергенами: https://drive.google.com/file/d/1U_9uKD4QqIVHrp7z4XEq9b3Yuls6orKV/view?usp=sharing"
+                if restaurant_name == "McDonald's":
+                    website = "Ознакомиться со всеми аллергенами: https://im.kz/products"
+                if restaurant_name == "Tanuki":
+                    website = "Ознакомиться со всеми аллергенами: https://tanukifamily.kz/tanuki_kz/almaty/"
                 bot.send_message(
                     message.chat.id,
                     f"Ресторан - {restaurant_name}\n"
@@ -1414,6 +1438,8 @@ def dish_handling_func_1(message, restaurant):
                     f"Белки: {protein} г\n"
                     f"Жиры: {fat} г\n"
                     f"Углеводы: {carbs} г\n"
+                    f"------------------\n"
+                    f"{website}\n"
                     f"⚠️ {allergenes_str}",
                     reply_markup=markup
                 )
