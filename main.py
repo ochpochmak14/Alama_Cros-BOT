@@ -24,8 +24,8 @@ RESTAURANT_MAP = {
     "tomyumbar":  "TomYumBar",
     "popeyes":    "Popeyes",
     "Додо пицца": "Додо пицца",
-    "bahandi":    "Баханди",
-    "coffeeboom": "Кофе Бум",
+    "bahandi":    "Bahandi",
+    "coffeeboom": "Coffee Boom",
 }
 
 
@@ -390,8 +390,61 @@ def handle_show_cart(message):
 
 # ─── УНИВЕРСАЛЬНЫЕ НАПИТКИ ────────────────────────────────────────────────────
 
+def fuzzy_search_drink(query: str, limit: int = 5):
+    """
+    Нечёткий поиск по названиям напитков в таблице universal_drinks.
+    Возвращает список (name, volume_ml, kcal, protein, fat, carbs)
+    отсортированных по убыванию схожести.
+    Работает даже при опечатках, смешении языков и неточном написании.
+    Например: «кока», «cola», «фьюс ти персик», «макси лимон», «сеВЕН ап»
+    """
+    from rapidfuzz import process, fuzz
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT name, volume_ml, kcal, protein, fat, carbs FROM universal_drinks")
+    all_drinks = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    if not all_drinks:
+        return []
+
+    # Словарь «нижний регистр → полная строка данных»
+    drinks_map = {row[0].lower(): row for row in all_drinks}
+
+    # Ищем по нескольким алгоритмам и берём лучшее
+    matches = process.extract(
+        query.lower(),
+        list(drinks_map.keys()),
+        scorer=fuzz.WRatio,   # WRatio — комбинированный: хорошо ловит частичные совпадения
+        limit=limit
+    )
+
+    results = []
+    for matched_name, score, _ in matches:
+        if score >= 45:   # порог — достаточно мягкий чтобы ловить «кола» → «Coca-Cola»
+            results.append(drinks_map[matched_name])
+
+    return results
+
+
+def _format_drink_card(name, volume, kcal, protein, fat, carbs):
+    """Форматирует карточку одного напитка."""
+    return (
+        f"🥤 <b>{name}</b> {volume} мл\n"
+        f"──────────────────\n"
+        f"Калории: {kcal} ккал\n"
+        f"Белки: {protein} г\n"
+        f"Жиры: {fat} г\n"
+        f"Углеводы: {carbs} г\n"
+        f"──────────────────\n"
+        f"ℹ️ Универсальный напиток — данные одинаковы для всех ресторанов"
+    )
+
+
 def show_universal_drinks(chat_id):
-    """Показывает список универсальных напитков из таблицы universal_drinks."""
+    """Показывает полный список универсальных напитков."""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
@@ -420,6 +473,38 @@ def show_universal_drinks(chat_id):
     bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
 
+def search_and_send_drink(chat_id, query: str, markup):
+    """
+    Ищет напиток нечётко и отправляет результат.
+    Если найдено несколько — показывает все подходящие.
+    Если ничего — возвращает False (чтобы вызывающий код мог показать своё сообщение).
+    """
+    results = fuzzy_search_drink(query)
+    if not results:
+        return False
+
+    if len(results) == 1:
+        name, volume, kcal, protein, fat, carbs = results[0]
+        bot.send_message(
+            chat_id,
+            _format_drink_card(name, volume, kcal, protein, fat, carbs),
+            parse_mode="HTML",
+            reply_markup=markup
+        )
+    else:
+        # Несколько похожих — показываем все
+        text = "🥤 <b>Похожие напитки:</b>\n\n"
+        for name, volume, kcal, protein, fat, carbs in results:
+            text += (
+                f"<b>{name}</b> {volume} мл\n"
+                f"Калории: {kcal} ккал | Б: {protein} г | Ж: {fat} г | У: {carbs} г\n"
+                f"─────────────\n"
+            )
+        bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+
+    return True
+
+
 # ─── ВВОД БЛЮДА ───────────────────────────────────────────────────────────────
 
 def _get_back_cb(restaurant_name):
@@ -432,8 +517,8 @@ def _get_back_cb(restaurant_name):
 
 def ask_for_dish(chat_id, restaurant, message_id=None):
     markup = types.InlineKeyboardMarkup()
-    back_cb = _get_back_cb(restaurant) if restaurant else "back_1"
-    markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data=back_cb))
+    # Кнопка «Назад» на экране ввода блюда → всегда в главное меню
+    markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="back_1"))
 
     text = f"Введите название блюда из <b>{restaurant}</b>" if restaurant else "❌ Некорректный ресторан"
 
@@ -561,12 +646,14 @@ def callback_message(callback):
     elif data == "back_1":
         show_menu1(chat_id, user_id)
 
-    # ── Назад в тот же ресторан ───────────────────────────────────────────────
+    # ── Назад в тот же ресторан (с карточки блюда → ввод блюда того же ресторана)
     elif data.startswith("back_rest|"):
         rest_key = data.split("|", 1)[1]
         restaurant_name = RESTAURANT_MAP.get(rest_key)
         if restaurant_name:
             user_last_restaurant[user_id] = restaurant_name
+            # Показываем ввод блюда для того же ресторана
+            bot.clear_step_handler_by_chat_id(chat_id)
             ask_for_dish(chat_id, restaurant_name)
         else:
             show_menu1(chat_id, user_id)
@@ -587,14 +674,20 @@ def callback_message(callback):
         cur.close()
         conn.close()
 
+        # Кнопка «Назад» — в тот же ресторан если знаем, иначе в главное меню
+        last_rest = user_last_restaurant.get(user_id)
+        back_cb = _get_back_cb(last_rest) if last_rest else "back_1"
+
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data='back_1'))
+        markup.add(types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data=back_cb))
         markup.row(types.InlineKeyboardButton(
             "🛒 Добавить блюдо в корзину.",
             callback_data=f"add_dish_to_cart|{dishes_id}"
         ))
 
         if row:
+            # Обновляем last_rest из данных самого блюда (на случай если пришли из истории)
+            user_last_restaurant[user_id] = row[1]
             text = format_dish_message(row)
             bot.send_message(chat_id, text, parse_mode='HTML', reply_markup=markup)
             add_to_history(user_id, row[0], row[1])
@@ -668,8 +761,8 @@ def callback_message(callback):
             types.InlineKeyboardButton("Додо пицца",  callback_data="rest|Додо пицца")
         )
         markup.row(
-            types.InlineKeyboardButton("Баханди",     callback_data="rest|bahandi"),
-            types.InlineKeyboardButton("Кофе Бум",    callback_data="rest|coffeeboom")
+            types.InlineKeyboardButton("Bahandi",     callback_data="rest|bahandi"),
+            types.InlineKeyboardButton("Coffee Boom", callback_data="rest|coffeeboom")
         )
         markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data='back_1'))
         bot.edit_message_text(
@@ -867,12 +960,20 @@ def handle_text(message):
     elif text in ["Hardee's", "hardees", "Hardes", "hardes", "Хардис", "хардис", "ХАРДИС", "харди", "хард"]:
         ask_for_dish(message.chat.id, "Hardee's")
     elif text in ["Баханди", "баханди", "БАХАНДИ", "bahandi", "Bahandi", "BAHANDI", "бахан"]:
-        ask_for_dish(message.chat.id, "Баханди")
+        ask_for_dish(message.chat.id, "Bahandi")
     elif text in ["кофе бум", "Кофе бум", "Кофе Бум", "КОФЕ БУМ", "coffeeboom", "coffee boom", "Coffee Boom"]:
-        ask_for_dish(message.chat.id, "Кофе Бум")
+        ask_for_dish(message.chat.id, "Coffee Boom")
     else:
         normalized = normalize_restaurant(text)
-        ask_for_dish(message.chat.id, normalized)
+        # Если normalize_restaurant вернул что-то непохожее на ресторан —
+        # пробуем нечёткий поиск по напиткам прежде чем вызвать ask_for_dish
+        drink_results = fuzzy_search_drink(text, limit=3)
+        if drink_results and normalized not in RESTAURANT_MAP.values():
+            markup = types.InlineKeyboardMarkup()
+            markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data="back_1"))
+            search_and_send_drink(message.chat.id, text, markup)
+        else:
+            ask_for_dish(message.chat.id, normalized)
 
 
 # ─── УДАЛЕНИЕ ИЗ КОРЗИНЫ ──────────────────────────────────────────────────────
@@ -970,35 +1071,11 @@ def dish_handling_func_1(message, restaurant):
     back_cb = _get_back_cb(restaurant_name)
 
     if not all_dishes:
-        # Пробуем универсальные напитки как fallback
-        cur.execute("""
-            SELECT name, volume_ml, kcal, protein, fat, carbs
-            FROM universal_drinks
-            WHERE name ILIKE %s
-        """, (f"%{dish_input}%",))
-        drink = cur.fetchone()
-        cur.close()
-        conn.close()
-
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data=back_cb))
 
-        if drink:
-            name, volume, kcal, protein, fat, carbs = drink
-            bot.send_message(
-                message.chat.id,
-                f"🥤 <b>{name}</b> {volume} мл\n"
-                f"──────────────────\n"
-                f"Калории: {kcal} ккал\n"
-                f"Белки: {protein} г\n"
-                f"Жиры: {fat} г\n"
-                f"Углеводы: {carbs} г\n"
-                f"──────────────────\n"
-                f"ℹ️ Универсальный напиток — данные одинаковы для всех ресторанов",
-                parse_mode="HTML",
-                reply_markup=markup
-            )
-        else:
+        found = search_and_send_drink(message.chat.id, dish_input, markup)
+        if not found:
             bot.send_message(message.chat.id, "Блюда для этого ресторана не найдены.", reply_markup=markup)
         return
 
@@ -1064,33 +1141,12 @@ def dish_handling_func_1(message, restaurant):
         bot.send_message(message.chat.id, "Похожие блюда:", reply_markup=markup)
 
     else:
-        # Нет совпадений в ресторане — проверяем универсальные напитки
-        cur.execute("""
-            SELECT name, volume_ml, kcal, protein, fat, carbs
-            FROM universal_drinks
-            WHERE name ILIKE %s
-            LIMIT 1
-        """, (f"%{dish_input}%",))
-        drink = cur.fetchone()
+        # Нет совпадений в ресторане — пробуем нечёткий поиск по напиткам
         cur.close()
         conn.close()
 
-        if drink:
-            name, volume, kcal, protein, fat, carbs = drink
-            bot.send_message(
-                message.chat.id,
-                f"🥤 <b>{name}</b> {volume} мл\n"
-                f"──────────────────\n"
-                f"Калории: {kcal} ккал\n"
-                f"Белки: {protein} г\n"
-                f"Жиры: {fat} г\n"
-                f"Углеводы: {carbs} г\n"
-                f"──────────────────\n"
-                f"ℹ️ Универсальный напиток — данные одинаковы для всех ресторанов",
-                parse_mode="HTML",
-                reply_markup=markup
-            )
-        else:
+        found = search_and_send_drink(message.chat.id, dish_input, markup)
+        if not found:
             bot.send_message(
                 message.chat.id,
                 "Этого блюда нет в базе. Попробуйте ввести другое название или уточнить запрос.",
