@@ -76,8 +76,14 @@ def format_dish_message(row):
         f"⚠️ {allergenes_str}"
     )
 
+    # Плашка предупреждения — только если флаг стоит И есть текст в БД
     if suspicious_kbju and suspicious_text:
-        text += f"\n\n🚨 <b>Внимание!</b> {suspicious_text}"
+        text += (
+            f"\n\n{'🚨' * 5}\n"
+            f"<b>⚠️ ВНИМАНИЕ: Подозрительное КБЖУ</b>\n"
+            f"{suspicious_text}\n"
+            f"{'🚨' * 5}"
+        )
 
     return text
 
@@ -97,7 +103,7 @@ def build_main_inline_markup():
         types.InlineKeyboardButton("TomYumBar",   callback_data='tomyumbar'),
     )
     # Баханди и Кофе Бум — только через "По ресторану" или текстом
-    markup.row(types.InlineKeyboardButton("🥤 Универсальные напитки", callback_data='universal_drinks'))
+    markup.row(types.InlineKeyboardButton("📖 Меню ресторана",         callback_data='browse_menu'))
     markup.row(types.InlineKeyboardButton("🛒 Показать корзину",      callback_data='show_cart'))
     markup.row(types.InlineKeyboardButton("📜 История поиска",        callback_data='history'))
     markup.row(types.InlineKeyboardButton("📝 Раздел предложений",    callback_data='offers'))
@@ -618,6 +624,159 @@ def sort_by(section_id, criterion):
     return [row[0] for row in rows]
 
 
+# ─── ПРОСМОТР МЕНЮ РЕСТОРАНА ──────────────────────────────────────────────────
+
+# Эмодзи для секций
+SECTION_EMOJI = {
+    "Закуски":       "🍟",
+    "Салаты":        "🥗",
+    "Паста":         "🍝",
+    "Горячие блюда": "🍽️",
+    "Бургеры":       "🍔",
+    "Пицца":         "🍕",
+    "Суши":          "🍣",
+    "Десерты":       "🍰",
+    "Соусы":         "🥫",
+    "Напитки":       "🥤",
+    "Завтраки":      "🍳",
+    "Супы":          "🍲",
+}
+
+
+def send_browse_restaurant_picker(chat_id, message_id=None):
+    """Показывает список ресторанов для просмотра меню."""
+    markup = types.InlineKeyboardMarkup()
+    markup.row(
+        types.InlineKeyboardButton("McDonald's",  callback_data="bmenu_rest|mcdonalds"),
+        types.InlineKeyboardButton("POPEYES",     callback_data="bmenu_rest|popeyes"),
+        types.InlineKeyboardButton("KFC",         callback_data="bmenu_rest|kfc"),
+    )
+    markup.row(
+        types.InlineKeyboardButton("Burger King", callback_data="bmenu_rest|burgerk"),
+        types.InlineKeyboardButton("Tanuki",      callback_data="bmenu_rest|tanuki"),
+        types.InlineKeyboardButton("TomYumBar",   callback_data="bmenu_rest|tomyumbar"),
+    )
+    markup.row(
+        types.InlineKeyboardButton("Додо пицца",  callback_data="bmenu_rest|Додо пицца"),
+        types.InlineKeyboardButton("Bella Ciao",  callback_data="bmenu_rest|bella_ciao"),
+    )
+    markup.row(
+        types.InlineKeyboardButton("Bahandi",     callback_data="bmenu_rest|bahandi"),
+        types.InlineKeyboardButton("Coffee Boom", callback_data="bmenu_rest|coffeeboom"),
+    )
+    markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data="back_1"))
+
+    text = "📖 Выберите ресторан для просмотра меню:"
+
+    if message_id:
+        bot.edit_message_text(
+            chat_id=chat_id, message_id=message_id,
+            text=text, reply_markup=markup
+        )
+    else:
+        bot.send_message(chat_id, text, reply_markup=markup)
+
+
+def send_browse_sections(chat_id, rest_key, message_id=None):
+    """
+    Показывает секции, которые реально есть у ресторана в БД.
+    Плюс кнопка «Всё меню».
+    """
+    restaurant_name = RESTAURANT_MAP.get(rest_key, rest_key)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    # Берём только те секции, у которых есть блюда в этом ресторане
+    cur.execute("""
+        SELECT DISTINCT s.id, s.name
+        FROM sections s
+        JOIN dishes d ON d.sectionid = s.id
+        WHERE d.restaurant = %s
+        ORDER BY s.id
+    """, (restaurant_name,))
+    sections = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    if not sections:
+        bot.send_message(chat_id, f"❌ Меню для {restaurant_name} пока не загружено.")
+        return
+
+    markup = types.InlineKeyboardMarkup()
+
+    # Кнопки секций — по 2 в ряд
+    row_btns = []
+    for sec_id, sec_name in sections:
+        emoji = SECTION_EMOJI.get(sec_name, "🍴")
+        btn = types.InlineKeyboardButton(
+            f"{emoji} {sec_name}",
+            callback_data=f"bmenu_sec|{rest_key}|{sec_id}"
+        )
+        row_btns.append(btn)
+        if len(row_btns) == 2:
+            markup.row(*row_btns)
+            row_btns = []
+    if row_btns:
+        markup.row(*row_btns)
+
+    # Кнопка «Всё меню»
+    markup.row(types.InlineKeyboardButton(
+        "📋 Всё меню", callback_data=f"bmenu_all|{rest_key}"
+    ))
+    markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data="browse_menu"))
+
+    text = f"📖 <b>{restaurant_name}</b> — выберите раздел:"
+
+    if message_id:
+        bot.edit_message_text(
+            chat_id=chat_id, message_id=message_id,
+            text=text, parse_mode="HTML", reply_markup=markup
+        )
+    else:
+        bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+
+
+def send_browse_dishes(chat_id, restaurant_name, dishes, section_name, rest_key):
+    """
+    Отправляет список блюд с ID постранично (по 20 блюд в сообщении).
+    Формат такой же как в топ-5 — с ID для добавления в корзину.
+    """
+    if not dishes:
+        bot.send_message(chat_id, "😢 В этом разделе пока нет блюд.")
+        return
+
+    back_markup = types.InlineKeyboardMarkup()
+    back_markup.row(types.InlineKeyboardButton(
+        "⬅️ К разделам", callback_data=f"bmenu_rest|{rest_key}"
+    ))
+    back_markup.row(types.InlineKeyboardButton(
+        "🔍 Искать блюдо", callback_data=f"back_rest|{rest_key}"
+    ))
+
+    # Разбиваем на страницы по 20 блюд чтобы не превышать лимит Telegram
+    PAGE_SIZE = 20
+    pages = [dishes[i:i + PAGE_SIZE] for i in range(0, len(dishes), PAGE_SIZE)]
+
+    header = f"📖 <b>{restaurant_name}</b> — <b>{section_name}</b>\n\n"
+
+    for page_num, page in enumerate(pages):
+        text = header if page_num == 0 else f"<i>(продолжение)</i>\n\n"
+        for dish_id, dish_name, kcal, protein, fat, carbs in page:
+            text += (
+                f"<b>{dish_name}</b>\n"
+                f"Б: {protein} г | Ж: {fat} г | У: {carbs} г | {kcal} ккал\n"
+                f"🆔 ID: <code>{dish_id}</code>\n"
+                f"──────────────\n"
+            )
+
+        # Кнопку «назад» добавляем только к последней странице
+        if page_num == len(pages) - 1:
+            text += "\n👉 Отправьте <b>ID блюда</b>, чтобы добавить в корзину"
+            bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=back_markup)
+        else:
+            bot.send_message(chat_id, text, parse_mode="HTML")
+
+
 # ─── ГЛАВНЫЙ CALLBACK ХЕНДЛЕР ─────────────────────────────────────────────────
 
 @bot.callback_query_handler(func=lambda c: True)
@@ -634,9 +793,59 @@ def callback_message(callback):
         user_last_restaurant[user_id] = dt2
         ask_for_dish(chat_id, dt2)
 
-    # ── Универсальные напитки ─────────────────────────────────────────────────
-    elif data == "universal_drinks":
-        show_universal_drinks(chat_id)
+    # ── Просмотр меню ресторана ───────────────────────────────────────────────
+    elif data == "browse_menu":
+        send_browse_restaurant_picker(chat_id, callback.message.message_id)
+
+    elif data.startswith("bmenu_rest|"):
+        rest_key = data.split("|", 1)[1]
+        send_browse_sections(chat_id, rest_key, callback.message.message_id)
+
+    elif data.startswith("bmenu_sec|"):
+        # bmenu_sec|rest_key|section_id
+        _, rest_key, sec_id = data.split("|")
+        restaurant_name = RESTAURANT_MAP.get(rest_key, rest_key)
+
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sections WHERE id = %s", (sec_id,))
+        sec_row = cur.fetchone()
+        section_name = sec_row[0] if sec_row else "Раздел"
+
+        cur.execute("""
+            SELECT id, dish, kcal, protein, fat, carbs
+            FROM dishes
+            WHERE restaurant = %s AND sectionid = %s
+            ORDER BY dish
+        """, (restaurant_name, sec_id))
+        dishes = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        user_state[user_id] = "WAIT_DISH_ID"
+        user_last_restaurant[user_id] = restaurant_name
+        send_browse_dishes(chat_id, restaurant_name, dishes, section_name, rest_key)
+
+    elif data.startswith("bmenu_all|"):
+        rest_key = data.split("|", 1)[1]
+        restaurant_name = RESTAURANT_MAP.get(rest_key, rest_key)
+
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT d.id, d.dish, d.kcal, d.protein, d.fat, d.carbs
+            FROM dishes d
+            JOIN sections s ON s.id = d.sectionid
+            WHERE d.restaurant = %s
+            ORDER BY s.id, d.dish
+        """, (restaurant_name,))
+        dishes = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        user_state[user_id] = "WAIT_DISH_ID"
+        user_last_restaurant[user_id] = restaurant_name
+        send_browse_dishes(chat_id, restaurant_name, dishes, "Всё меню", rest_key)
 
     # ── История ───────────────────────────────────────────────────────────────
     elif data == "history":
@@ -937,6 +1146,43 @@ def callback_message(callback):
         )
 
 
+# ─── МАППИНГ РЕСТОРАНОВ ПО НИЖНЕМУ РЕГИСТРУ ──────────────────────────────────
+# Ключи — всё в нижнем регистре, значения — точное название как в БД
+RESTAURANT_ALIASES = {
+    # McDonald's
+    "mcdonald's": "McDonald's", "mcdonalds": "McDonald's", "мак": "McDonald's",
+    "макдак": "McDonald's", "макдональдс": "McDonald's", "макдоналдс": "McDonald's",
+    "мaкдоналдс": "McDonald's",
+    # KFC
+    "kfc": "KFC", "кфс": "KFC", "кfc": "KFC",
+    # Burger King
+    "burger king": "Burger King", "burgerk": "Burger King", "бургер кинг": "Burger King",
+    "бк": "Burger King", "бургер": "Burger King",
+    # Tanuki
+    "tanuki": "Tanuki", "тануки": "Tanuki",
+    # TomYumBar
+    "tomyumbar": "TomYumBar", "tom yum bar": "TomYumBar", "том ям бар": "TomYumBar",
+    "томюмбар": "TomYumBar", "том юм": "TomYumBar",
+    # Popeyes
+    "popeyes": "Popeyes", "попайс": "Popeyes", "попис": "Popeyes", "popeye": "Popeyes",
+    # Bella Ciao
+    "bella ciao": "Bella Ciao", "белла чао": "Bella Ciao", "bellaciao": "Bella Ciao",
+    # Додо пицца
+    "додо пицца": "Додо пицца", "dodo pizza": "Додо пицца", "додо": "Додо пицца",
+    "dodo": "Додо пицца", "пиццы": "Додо пицца",
+    # Wendy's
+    "wendy's": "Wendy's", "wendys": "Wendy's", "вендис": "Wendy's", "венди": "Wendy's",
+    # Hardee's
+    "hardee's": "Hardee's", "hardees": "Hardee's", "хардис": "Hardee's",
+    "харди": "Hardee's", "хард": "Hardee's",
+    # Bahandi
+    "bahandi": "Bahandi", "баханди": "Bahandi", "бахан": "Bahandi",
+    # Coffee Boom
+    "coffee boom": "Coffee Boom", "coffeeboom": "Coffee Boom", "кофе бум": "Coffee Boom",
+    "кофебум": "Coffee Boom",
+}
+
+
 # ─── ТЕКСТОВЫЕ ХЕНДЛЕРЫ ───────────────────────────────────────────────────────
 
 @bot.message_handler(func=lambda m: m.text.isdigit())
@@ -951,29 +1197,30 @@ def add_by_id(message):
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
     from normalize_text import normalize_restaurant
-    text = message.text
 
-    if text in ["Додо пицца", "dodo pizza", "Dodo pizza", "Додо", "dodo", "Dodo", "додо", "пиццы", "Пиццы"]:
-        ask_for_dish(message.chat.id, "Додо пицца")
-    elif text in ["вендис", "Вендис", "Wendys", "wendys", "WENDYS", "wendy's", "Wendy's", "Wendy", "wendy"]:
-        ask_for_dish(message.chat.id, "Wendy's")
-    elif text in ["Hardee's", "hardees", "Hardes", "hardes", "Хардис", "хардис", "ХАРДИС", "харди", "хард"]:
-        ask_for_dish(message.chat.id, "Hardee's")
-    elif text in ["Баханди", "баханди", "БАХАНДИ", "bahandi", "Bahandi", "BAHANDI", "бахан"]:
-        ask_for_dish(message.chat.id, "Bahandi")
-    elif text in ["кофе бум", "Кофе бум", "Кофе Бум", "КОФЕ БУМ", "coffeeboom", "coffee boom", "Coffee Boom"]:
-        ask_for_dish(message.chat.id, "Coffee Boom")
+    text_lower = message.text.strip().lower()
+
+    # Сначала проверяем по словарю алиасов (регистронезависимо)
+    if text_lower in RESTAURANT_ALIASES:
+        restaurant_name = RESTAURANT_ALIASES[text_lower]
+        ask_for_dish(message.chat.id, restaurant_name)
+        return
+
+    # Затем пробуем normalize_restaurant
+    normalized = normalize_restaurant(message.text)
+
+    if normalized in RESTAURANT_MAP.values():
+        ask_for_dish(message.chat.id, normalized)
+        return
+
+    # Не похоже на ресторан — пробуем нечёткий поиск по напиткам
+    drink_results = fuzzy_search_drink(text_lower, limit=3)
+    if drink_results:
+        markup = types.InlineKeyboardMarkup()
+        markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data="back_1"))
+        search_and_send_drink(message.chat.id, text_lower, markup)
     else:
-        normalized = normalize_restaurant(text)
-        # Если normalize_restaurant вернул что-то непохожее на ресторан —
-        # пробуем нечёткий поиск по напиткам прежде чем вызвать ask_for_dish
-        drink_results = fuzzy_search_drink(text, limit=3)
-        if drink_results and normalized not in RESTAURANT_MAP.values():
-            markup = types.InlineKeyboardMarkup()
-            markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data="back_1"))
-            search_and_send_drink(message.chat.id, text, markup)
-        else:
-            ask_for_dish(message.chat.id, normalized)
+        ask_for_dish(message.chat.id, normalized)
 
 
 # ─── УДАЛЕНИЕ ИЗ КОРЗИНЫ ──────────────────────────────────────────────────────
