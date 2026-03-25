@@ -13,7 +13,7 @@ user_restaurant = {}   # для сортировки по ресторану в 
 user_state = {}        # для ожидания ввода ID блюда
 user_last_restaurant = {}  # для кнопки «Назад» — возврат в тот же ресторан
 
-cat_id = None  # текущая категория (глобальная — TODO: перенести в user_state)
+user_cat_id = {}  # cat_id per user — раньше была глобальная, теперь словарь по user_id
 
 RESTAURANT_MAP = {
     "mcdonalds":  "McDonald's",
@@ -23,7 +23,7 @@ RESTAURANT_MAP = {
     "kfc":        "KFC",
     "tomyumbar":  "TomYumBar",
     "popeyes":    "Popeyes",
-    "Додо пицца": "Додо пицца",
+    "dodo":       "Додо пицца",
     "bahandi":    "Bahandi",
     "coffeeboom": "Coffee Boom",
 }
@@ -216,46 +216,51 @@ def add_to_cart(user_id, dish_name, restaurant):
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("""
-        SELECT weight, kcal, protein, fat, carbs
-        FROM dishes WHERE dish = %s AND restaurant = %s
-    """, (dish_name, restaurant))
-    dish = cur.fetchone()
+    try:
+        cur.execute("""
+            SELECT weight, kcal, protein, fat, carbs
+            FROM dishes WHERE dish = %s AND restaurant = %s
+        """, (dish_name, restaurant))
+        dish = cur.fetchone()
 
-    if not dish:
+        if not dish:
+            return "❌ Такого блюда в этом ресторане нет!"
+
+        weight, kcal, protein, fat, carbs = dish
+
+        cur.execute("""
+            SELECT id FROM cart_items
+            WHERE user_id = %s AND dish = %s AND restaurant = %s
+        """, (user_id, dish_name, restaurant))
+        existing = cur.fetchone()
+
+        if existing:
+            cur.execute("""
+                UPDATE cart_items
+                SET quantity  = quantity + 1,
+                    weight    = weight   + %s,
+                    kcal      = kcal     + %s,
+                    protein   = protein  + %s,
+                    fat       = fat      + %s,
+                    carbs     = carbs    + %s
+                WHERE id = %s
+            """, (weight, kcal, protein, fat, carbs, existing[0]))
+        else:
+            cur.execute("""
+                INSERT INTO cart_items(user_id, dish, restaurant, weight, kcal, protein, fat, carbs)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (user_id, dish_name, restaurant, weight, kcal, protein, fat, carbs))
+
+        conn.commit()
+        return f"✅ {dish_name} ({restaurant}) добавлен в корзину!"
+
+    except Exception as e:
+        conn.rollback()
+        print("add_to_cart error:", e)
+        return "❌ Ошибка при добавлении блюда"
+    finally:
         cur.close()
         conn.close()
-        return "❌ Такого блюда в этом ресторане нет!"
-
-    weight, kcal, protein, fat, carbs = dish
-
-    cur.execute("""
-        SELECT id FROM cart_items
-        WHERE user_id = %s AND dish = %s AND restaurant = %s
-    """, (user_id, dish_name, restaurant))
-    existing = cur.fetchone()
-
-    if existing:
-        cur.execute("""
-            UPDATE cart_items
-            SET quantity  = quantity + 1,
-                weight    = weight   + %s,
-                kcal      = kcal     + %s,
-                protein   = protein  + %s,
-                fat       = fat      + %s,
-                carbs     = carbs    + %s
-            WHERE id = %s
-        """, (weight, kcal, protein, fat, carbs, existing[0]))
-    else:
-        cur.execute("""
-            INSERT INTO cart_items(user_id, dish, restaurant, weight, kcal, protein, fat, carbs)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """, (user_id, dish_name, restaurant, weight, kcal, protein, fat, carbs))
-
-    conn.commit()
-    cur.close()
-    conn.close()
-    return f"✅ {dish_name} ({restaurant}) добавлен в корзину!"
 
 
 def add_to_cart_by_id(user_id, dish_id):
@@ -398,11 +403,10 @@ def handle_show_cart(message):
 
 def fuzzy_search_drink(query: str, limit: int = 5):
     """
-    Нечёткий поиск по названиям напитков в таблице universal_drinks.
-    Возвращает список (name, volume_ml, kcal, protein, fat, carbs)
-    отсортированных по убыванию схожести.
-    Работает даже при опечатках, смешении языков и неточном написании.
-    Например: «кока», «cola», «фьюс ти персик», «макси лимон», «сеВЕН ап»
+    Нечёткий поиск напитков.
+    Использует два прохода:
+    1. Точное вхождение подстроки (кола → Coca-Cola, фьюс → Fuse Tea...)
+    2. Нечёткое совпадение с высоким порогом (для опечаток)
     """
     from rapidfuzz import process, fuzz
 
@@ -416,20 +420,31 @@ def fuzzy_search_drink(query: str, limit: int = 5):
     if not all_drinks:
         return []
 
-    # Словарь «нижний регистр → полная строка данных»
+    q = query.lower().strip()
     drinks_map = {row[0].lower(): row for row in all_drinks}
 
-    # Ищем по нескольким алгоритмам и берём лучшее
+    # Проход 1: прямое вхождение подстроки
+    # «кола» входит в «coca-cola», «фьюс» входит в «fuse tea чёрный лимон»
+    substring_results = []
+    for name_lower, row in drinks_map.items():
+        if q in name_lower:
+            substring_results.append(row)
+    if substring_results:
+        return substring_results[:limit]
+
+    # Проход 2: нечёткое совпадение — только если нет прямого вхождения
+    # Используем token_set_ratio: хорошо работает для «макси лимон» → «Maxi Чай Чёрный Лимон»
+    # Высокий порог 70 чтобы не было ложных срабатываний
     matches = process.extract(
-        query.lower(),
+        q,
         list(drinks_map.keys()),
-        scorer=fuzz.WRatio,   # WRatio — комбинированный: хорошо ловит частичные совпадения
+        scorer=fuzz.token_set_ratio,
         limit=limit
     )
 
     results = []
     for matched_name, score, _ in matches:
-        if score >= 45:   # порог — достаточно мягкий чтобы ловить «кола» → «Coca-Cola»
+        if score >= 70:
             results.append(drinks_map[matched_name])
 
     return results
@@ -644,7 +659,9 @@ SECTION_EMOJI = {
 
 
 def send_browse_restaurant_picker(chat_id, message_id=None):
-    """Показывает список ресторанов для просмотра меню."""
+    """Показывает список ресторанов для просмотра меню.
+    Можно выбрать кнопкой или написать название текстом.
+    """
     markup = types.InlineKeyboardMarkup()
     markup.row(
         types.InlineKeyboardButton("McDonald's",  callback_data="bmenu_rest|mcdonalds"),
@@ -657,7 +674,7 @@ def send_browse_restaurant_picker(chat_id, message_id=None):
         types.InlineKeyboardButton("TomYumBar",   callback_data="bmenu_rest|tomyumbar"),
     )
     markup.row(
-        types.InlineKeyboardButton("Додо пицца",  callback_data="bmenu_rest|Додо пицца"),
+        types.InlineKeyboardButton("Додо пицца",  callback_data="bmenu_rest|dodo"),
         types.InlineKeyboardButton("Bella Ciao",  callback_data="bmenu_rest|bella_ciao"),
     )
     markup.row(
@@ -666,15 +683,18 @@ def send_browse_restaurant_picker(chat_id, message_id=None):
     )
     markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data="back_1"))
 
-    text = "📖 Выберите ресторан для просмотра меню:"
+    text = "📖 Выберите ресторан или напишите его название:"
 
     if message_id:
-        bot.edit_message_text(
+        msg = bot.edit_message_text(
             chat_id=chat_id, message_id=message_id,
             text=text, reply_markup=markup
         )
     else:
-        bot.send_message(chat_id, text, reply_markup=markup)
+        msg = bot.send_message(chat_id, text, reply_markup=markup)
+
+    # Ждём текстового ввода — точно как в главном меню
+    bot.register_next_step_handler(msg, handle_browse_menu_text_input)
 
 
 def send_browse_sections(chat_id, rest_key, message_id=None):
@@ -777,6 +797,37 @@ def send_browse_dishes(chat_id, restaurant_name, dishes, section_name, rest_key)
             bot.send_message(chat_id, text, parse_mode="HTML")
 
 
+def handle_browse_menu_text_input(message):
+    """Обрабатывает текстовый ввод названия ресторана в разделе просмотра меню."""
+    text_lower = message.text.strip().lower()
+
+    # Ищем ресторан по алиасам
+    restaurant_name = RESTAURANT_ALIASES.get(text_lower)
+
+    # Если не нашли по алиасам — ищем прямо по значениям RESTAURANT_MAP
+    if not restaurant_name:
+        for name in RESTAURANT_MAP.values():
+            if text_lower in name.lower() or name.lower() in text_lower:
+                restaurant_name = name
+                break
+
+    if not restaurant_name:
+        bot.send_message(
+            message.chat.id,
+            "❌ Ресторан не найден. Попробуй написать точнее или выбери из списка.",
+        )
+        send_browse_restaurant_picker(message.chat.id)
+        return
+
+    # Нашли ресторан — ищем его ключ и показываем секции
+    rest_key = next((k for k, v in RESTAURANT_MAP.items() if v == restaurant_name), None)
+    if rest_key:
+        send_browse_sections(message.chat.id, rest_key)
+    else:
+        bot.send_message(message.chat.id, "❌ Ошибка. Попробуй выбрать из списка.")
+        send_browse_restaurant_picker(message.chat.id)
+
+
 # ─── ГЛАВНЫЙ CALLBACK ХЕНДЛЕР ─────────────────────────────────────────────────
 
 @bot.callback_query_handler(func=lambda c: True)
@@ -803,7 +854,8 @@ def callback_message(callback):
 
     elif data.startswith("bmenu_sec|"):
         # bmenu_sec|rest_key|section_id
-        _, rest_key, sec_id = data.split("|")
+        parts = data.split("|", 2)
+        _, rest_key, sec_id = parts
         restaurant_name = RESTAURANT_MAP.get(rest_key, rest_key)
 
         conn = get_conn()
@@ -967,7 +1019,7 @@ def callback_message(callback):
         )
         markup.row(
             types.InlineKeyboardButton("Popeyes",     callback_data="rest|popeyes"),
-            types.InlineKeyboardButton("Додо пицца",  callback_data="rest|Додо пицца")
+            types.InlineKeyboardButton("Додо пицца",  callback_data="rest|dodo")
         )
         markup.row(
             types.InlineKeyboardButton("Bahandi",     callback_data="rest|bahandi"),
@@ -1031,7 +1083,6 @@ def callback_message(callback):
 
     # ── Выбор критерия сортировки по категории блюда ─────────────────────────
     elif data.startswith("cat|"):
-        global cat_id
         category = data.split("|")[1]
         conn = get_conn()
         cur = conn.cursor()
@@ -1043,7 +1094,7 @@ def callback_message(callback):
         if not row:
             bot.send_message(chat_id, "Категория не найдена 😢")
             return
-        cat_id = row[0]
+        user_cat_id[user_id] = row[0]  # сохраняем per-user, не глобально
 
         markup = types.InlineKeyboardMarkup()
         markup.row(types.InlineKeyboardButton("Лучшее соотношение белков/кбжу", callback_data="sort|ratio"))
@@ -1064,6 +1115,10 @@ def callback_message(callback):
     # ── Топ-5 по категории ────────────────────────────────────────────────────
     elif data.startswith("sort|"):
         criterion = data.split("|")[1]
+        cat_id = user_cat_id.get(user_id)
+        if not cat_id:
+            bot.send_message(chat_id, "❌ Сначала выберите категорию")
+            return
         sorted_ids = sort_by(cat_id, criterion)
         if not sorted_ids:
             bot.send_message(chat_id, "Блюд нет 😢")
@@ -1200,6 +1255,11 @@ def handle_text(message):
 
     text_lower = message.text.strip().lower()
 
+    # Триггер для просмотра меню ресторана — текстом
+    if text_lower in ["меню", "посмотреть меню", "меню ресторана", "просмотреть меню"]:
+        send_browse_restaurant_picker(message.chat.id)
+        return
+
     # Сначала проверяем по словарю алиасов (регистронезависимо)
     if text_lower in RESTAURANT_ALIASES:
         restaurant_name = RESTAURANT_ALIASES[text_lower]
@@ -1208,19 +1268,16 @@ def handle_text(message):
 
     # Затем пробуем normalize_restaurant
     normalized = normalize_restaurant(message.text)
-
     if normalized in RESTAURANT_MAP.values():
         ask_for_dish(message.chat.id, normalized)
         return
 
-    # Не похоже на ресторан — пробуем нечёткий поиск по напиткам
-    drink_results = fuzzy_search_drink(text_lower, limit=3)
-    if drink_results:
-        markup = types.InlineKeyboardMarkup()
-        markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data="back_1"))
-        search_and_send_drink(message.chat.id, text_lower, markup)
-    else:
-        ask_for_dish(message.chat.id, normalized)
+    # Не похоже на ресторан — подсказываем
+    bot.send_message(
+        message.chat.id,
+        "🤔 Не могу распознать ресторан. Выберите из списка или введите название точнее.",
+    )
+    send_main_menu(message.chat.id)
 
 
 # ─── УДАЛЕНИЕ ИЗ КОРЗИНЫ ──────────────────────────────────────────────────────
@@ -1246,9 +1303,15 @@ def delete_dish(message, user_id):
 
     item_number, qty_to_remove = int(parts[0]), int(parts[1])
 
+    if qty_to_remove < 1:
+        bot.send_message(message.chat.id, "❌ Количество должно быть минимум 1")
+        cur.close()
+        conn.close()
+        return
+
     cur.execute("""
-        SELECT id, dish FROM (
-            SELECT id, dish,
+        SELECT id, dish, restaurant FROM (
+            SELECT id, dish, restaurant,
                    ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY id) AS rn
             FROM cart_items WHERE user_id = %s
         ) t WHERE rn = %s
@@ -1261,42 +1324,67 @@ def delete_dish(message, user_id):
         conn.close()
         return
 
-    real_id, dish_name = res1
+    real_id, dish_name, restaurant_name = res1
 
+    # Ищем КБЖУ с учётом ресторана, блюдо могло быть удалено из БД
     cur.execute(
-        "SELECT weight, kcal, protein, fat, carbs FROM dishes WHERE dish = %s",
-        (dish_name,)
+        "SELECT weight, kcal, protein, fat, carbs FROM dishes WHERE dish = %s AND restaurant = %s LIMIT 1",
+        (dish_name, restaurant_name)
     )
     res2 = cur.fetchone()
+
+    if not res2:
+        # Блюдо удалено из базы — просто удаляем строку корзины
+        try:
+            cur.execute(
+                "DELETE FROM cart_items WHERE id = %s AND user_id = %s",
+                (real_id, user_id)
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        finally:
+            cur.close()
+            conn.close()
+        bot.send_message(message.chat.id, f"✅ Блюдо №{item_number} удалено из корзины!")
+        return
+
     weight, kcal_p, protein_p, fat_p, carbs_p = res2
 
-    cur.execute("""
-        UPDATE cart_items
-        SET weight   = weight   - %s,
-            quantity = quantity - %s,
-            kcal     = kcal     - %s,
-            protein  = protein  - %s,
-            fat      = fat      - %s,
-            carbs    = carbs    - %s
-        WHERE id = %s AND user_id = %s
-        RETURNING quantity;
-    """, (
-        qty_to_remove * float(weight),
-        qty_to_remove,
-        qty_to_remove * float(kcal_p),
-        qty_to_remove * float(protein_p),
-        qty_to_remove * float(fat_p),
-        qty_to_remove * float(carbs_p),
-        real_id, user_id
-    ))
-    cur.execute(
-        "DELETE FROM cart_items WHERE id = %s AND user_id = %s AND quantity <= 0",
-        (real_id, user_id)
-    )
+    try:
+        cur.execute("""
+            UPDATE cart_items
+            SET weight   = weight   - %s,
+                quantity = quantity - %s,
+                kcal     = kcal     - %s,
+                protein  = protein  - %s,
+                fat      = fat      - %s,
+                carbs    = carbs    - %s
+            WHERE id = %s AND user_id = %s
+            RETURNING quantity;
+        """, (
+            qty_to_remove * float(weight),
+            qty_to_remove,
+            qty_to_remove * float(kcal_p),
+            qty_to_remove * float(protein_p),
+            qty_to_remove * float(fat_p),
+            qty_to_remove * float(carbs_p),
+            real_id, user_id
+        ))
+        cur.execute(
+            "DELETE FROM cart_items WHERE id = %s AND user_id = %s AND quantity <= 0",
+            (real_id, user_id)
+        )
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        bot.send_message(message.chat.id, "❌ Ошибка при удалении блюда")
+        print("delete_dish error:", e)
+        return
+    finally:
+        cur.close()
+        conn.close()
 
-    conn.commit()
-    cur.close()
-    conn.close()
     bot.send_message(message.chat.id, f"✅ Блюдо №{item_number} удалено из корзины!")
 
 
@@ -1351,11 +1439,15 @@ def dish_handling_func_1(message, restaurant):
             continue
         if score >= 99:
             exact_dish_id = res[0]
-        elif score >= 10:
+        elif score >= 40:   # порог 40 — реальное сходство, не любой мусор
             markup.add(types.InlineKeyboardButton(name, callback_data=f"dish|{res[0]}"))
             added = True
 
     markup.add(types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data=back_cb))
+
+    # Параллельно ищем в универсальных напитках — всегда, независимо от результата блюд
+    # Это кросс-ресторанный поиск: «фьюс ти» найдётся в любом ресторане
+    drink_results = fuzzy_search_drink(dish_input)
 
     if exact_dish_id:
         cur.execute("""
@@ -1387,18 +1479,35 @@ def dish_handling_func_1(message, restaurant):
         conn.close()
         bot.send_message(message.chat.id, "Похожие блюда:", reply_markup=markup)
 
-    else:
-        # Нет совпадений в ресторане — пробуем нечёткий поиск по напиткам
+    elif drink_results:
+        # Блюд не нашли — показываем напитки
         cur.close()
         conn.close()
+        drink_markup = types.InlineKeyboardMarkup()
+        drink_markup.add(types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data=back_cb))
+        search_and_send_drink(message.chat.id, dish_input, drink_markup)
 
-        found = search_and_send_drink(message.chat.id, dish_input, markup)
-        if not found:
-            bot.send_message(
-                message.chat.id,
-                "Этого блюда нет в базе. Попробуйте ввести другое название или уточнить запрос.",
-                reply_markup=markup
+    else:
+        cur.close()
+        conn.close()
+        bot.send_message(
+            message.chat.id,
+            "Этого блюда нет в базе. Попробуйте ввести другое название или уточнить запрос.",
+            reply_markup=markup
+        )
+
+    # Если нашли точное блюдо И напитки — напитки тоже показываем отдельным сообщением
+    # Например написали "кола" — нашли блюдо "кола" в ресторане И Coca-Cola из напитков
+    if exact_dish_id and drink_results:
+        drink_markup = types.InlineKeyboardMarkup()
+        text = "🥤 <b>Также нашли в универсальных напитках:</b>\n\n"
+        for name, volume, kcal, protein, fat, carbs in drink_results:
+            text += (
+                f"<b>{name}</b> {volume} мл\n"
+                f"Калории: {kcal} ккал | Б: {protein} г | Ж: {fat} г | У: {carbs} г\n"
+                f"─────────────\n"
             )
+        bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=drink_markup)
 
 
 # ─── ЗАПУСК ───────────────────────────────────────────────────────────────────
