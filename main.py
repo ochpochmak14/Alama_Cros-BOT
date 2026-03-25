@@ -12,8 +12,10 @@ user_dish_map = {}
 user_restaurant = {}   # для сортировки по ресторану в категориях
 user_state = {}        # для ожидания ввода ID блюда
 user_last_restaurant = {}  # для кнопки «Назад» — возврат в тот же ресторан
-
-user_cat_id = {}  # cat_id per user — раньше была глобальная, теперь словарь по user_id
+user_cat_id = {}       # cat_id per user
+user_greeted = set()   # пользователи которым уже показали приветствие
+user_cart_hinted = set()  # пользователи которым уже показали подсказку про корзину
+user_goal = {}         # цель в "Подбор по цели": protein/fat/carbs/ratio
 
 RESTAURANT_MAP = {
     "mcdonalds":  "McDonald's",
@@ -92,22 +94,26 @@ def format_dish_message(row):
 
 def build_main_inline_markup():
     markup = types.InlineKeyboardMarkup()
-    markup.add(
-        types.InlineKeyboardButton("McDonald's",  callback_data='mcdonalds'),
-        types.InlineKeyboardButton("POPEYES",     callback_data='popeyes'),
-        types.InlineKeyboardButton("KFC",         callback_data='kfc'),
+    # Первичные — рестораны
+    markup.row(
+        types.InlineKeyboardButton("McDonald's", callback_data='mcdonalds'),
+        types.InlineKeyboardButton("KFC",        callback_data='kfc'),
+        types.InlineKeyboardButton("Popeyes",    callback_data='popeyes'),
     )
     markup.row(
         types.InlineKeyboardButton("Burger King", callback_data='burgerk'),
         types.InlineKeyboardButton("Tanuki",      callback_data='tanuki'),
         types.InlineKeyboardButton("TomYumBar",   callback_data='tomyumbar'),
     )
-    # Баханди и Кофе Бум — только через "По ресторану" или текстом
-    markup.row(types.InlineKeyboardButton("📖 Меню ресторана",         callback_data='browse_menu'))
-    markup.row(types.InlineKeyboardButton("🛒 Показать корзину",      callback_data='show_cart'))
-    markup.row(types.InlineKeyboardButton("📜 История поиска",        callback_data='history'))
-    markup.row(types.InlineKeyboardButton("📝 Раздел предложений",    callback_data='offers'))
-    markup.row(types.InlineKeyboardButton("📙 Выбор по категориям",   callback_data='cats'))
+    # Вторичные — служебные действия
+    markup.row(
+        types.InlineKeyboardButton("🎯 Подбор по цели",   callback_data='cats'),
+        types.InlineKeyboardButton("🛒 Корзина",          callback_data='show_cart'),
+    )
+    markup.row(
+        types.InlineKeyboardButton("📜 История поиска",   callback_data='history'),
+        types.InlineKeyboardButton("💡 Предложить блюдо", callback_data='offers'),
+    )
     return markup
 
 
@@ -115,7 +121,7 @@ def send_main_menu(chat_id):
     reply_markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     reply_markup.add(
         types.KeyboardButton("📋 Меню"),
-        types.KeyboardButton("🛒 Показать корзину")
+        types.KeyboardButton("🛒 Корзина")
     )
     bot.send_message(
         chat_id,
@@ -154,11 +160,24 @@ def start(message):
         return
 
     bot.clear_step_handler_by_chat_id(chat_id)
+
+    # Приветствие — только при самом первом запуске
+    if user_id not in user_greeted:
+        user_greeted.add(user_id)
+        bot.send_message(
+            chat_id,
+            "👋 Привет! Я помогу узнать КБЖУ любого блюда из популярных ресторанов — "
+            "калории, белки, жиры и углеводы. Выбери ресторан ниже чтобы начать."
+        )
+
     send_main_menu(chat_id)
 
 
-@bot.message_handler(func=lambda m: m.text == "📋 Меню")
+@bot.message_handler(func=lambda m: m.text in ["📋 Меню", "🛒 Корзина"])
 def show_menu(message):
+    if message.text == "🛒 Корзина":
+        _send_cart(message.chat.id, message.from_user.id)
+        return
     bot.clear_step_handler_by_chat_id(chat_id=message.chat.id)
     send_main_menu(message.chat.id)
 
@@ -423,89 +442,91 @@ def fuzzy_search_drink(query: str, limit: int = 5):
     q = query.lower().strip()
     drinks_map = {row[0].lower(): row for row in all_drinks}
 
-    # Проход 1: прямое вхождение подстроки
-    # «кола» входит в «coca-cola», «фьюс» входит в «fuse tea чёрный лимон»
+    # Словарь русских алиасов → часть английского названия для поиска
+    RU_ALIASES = {
+        "пепси": "pepsi", "пепсi": "pepsi",
+        "кока кола": "coca-cola", "кока-кола": "coca-cola", "кола": "cola",
+        "фанта": "fanta",
+        "спрайт": "sprite",
+        "севен ап": "7up", "7 ап": "7up", "семь ап": "7up",
+        "миринда": "mirinda",
+        "швепс": "schweppes", "швеппс": "schweppes", "тоник": "schweppes",
+        "ред бул": "red bull", "ред булл": "red bull", "редбул": "red bull",
+        "пико апельсин": "piko апельсин", "пико яблоко": "piko яблоко",
+        "пико томат": "piko томат", "пико": "piko",
+        "темпо": "tempo", "темпо вишня": "tempo вишнёвый",
+        "фьюс ти": "fuse tea", "фьюз ти": "fuse tea", "фьюс чай": "fuse tea",
+        "макси чай": "maxi", "макси": "maxi",
+    }
+
+    # Переводим русский запрос в английский если есть алиас
+    translated_q = q
+    for ru, en in RU_ALIASES.items():
+        if ru in q:
+            translated_q = q.replace(ru, en)
+            break
+
+    # Проход 1: прямое вхождение подстроки — проверяем оба варианта (оригинал и перевод)
     substring_results = []
     for name_lower, row in drinks_map.items():
-        if q in name_lower:
+        if q in name_lower or translated_q in name_lower:
             substring_results.append(row)
     if substring_results:
         return substring_results[:limit]
 
-    # Проход 2: нечёткое совпадение — только если нет прямого вхождения
-    # Используем token_set_ratio: хорошо работает для «макси лимон» → «Maxi Чай Чёрный Лимон»
-    # Высокий порог 70 чтобы не было ложных срабатываний
-    matches = process.extract(
-        q,
-        list(drinks_map.keys()),
-        scorer=fuzz.token_set_ratio,
-        limit=limit
-    )
-
+    # Проход 2: нечёткое совпадение — пробуем оба варианта запроса
     results = []
-    for matched_name, score, _ in matches:
-        if score >= 70:
-            results.append(drinks_map[matched_name])
+    for search_q in set([q, translated_q]):
+        matches = process.extract(
+            search_q,
+            list(drinks_map.keys()),
+            scorer=fuzz.token_set_ratio,
+            limit=limit
+        )
+        for matched_name, score, _ in matches:
+            if score >= 70:
+                row = drinks_map[matched_name]
+                if row not in results:
+                    results.append(row)
 
     return results
 
 
 def _format_drink_card(name, volume, kcal, protein, fat, carbs):
-    """Форматирует карточку одного напитка."""
+    """Форматирует карточку напитка в том же стиле что и карточка блюда."""
     return (
-        f"🥤 <b>{name}</b> {volume} мл\n"
-        f"──────────────────\n"
-        f"Калории: {kcal} ккал\n"
+        f"🥤 Универсальный напиток\n"
+        f"Название — {name} ({volume} мл)\n"
+        f"------------------\n"
+        f"Калории: {kcal}\n"
         f"Белки: {protein} г\n"
         f"Жиры: {fat} г\n"
         f"Углеводы: {carbs} г\n"
-        f"──────────────────\n"
-        f"ℹ️ Универсальный напиток — данные одинаковы для всех ресторанов"
+        f"------------------\n"
+        f"ℹ️ Данные одинаковы для всех ресторанов"
     )
 
 
-def show_universal_drinks(chat_id):
-    """Показывает полный список универсальных напитков."""
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT name, volume_ml, kcal, protein, fat, carbs
-        FROM universal_drinks
-        ORDER BY name, volume_ml
-    """)
-    drinks = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    if not drinks:
-        bot.send_message(chat_id, "❌ Данные о напитках пока не загружены.")
-        return
-
-    text = "🥤 <b>Универсальные напитки:</b>\n<i>Одинаковы во всех ресторанах</i>\n\n"
-    for name, volume, kcal, protein, fat, carbs in drinks:
-        text += (
-            f"<b>{name}</b> {volume} мл\n"
-            f"Калории: {kcal} ккал | Б: {protein} г | Ж: {fat} г | У: {carbs} г\n"
-            f"─────────────\n"
-        )
-
-    markup = types.InlineKeyboardMarkup()
-    markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data="back_1"))
-    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
-
-
-def search_and_send_drink(chat_id, query: str, markup):
+def search_and_send_drink(chat_id, query: str, back_markup):
     """
-    Ищет напиток нечётко и отправляет результат.
-    Если найдено несколько — показывает все подходящие.
-    Если ничего — возвращает False (чтобы вызывающий код мог показать своё сообщение).
+    Ищет напиток и показывает результат:
+    - 1 результат → сразу карточка с кнопкой «В корзину»
+    - Несколько → список кнопок как с блюдами, нажимаешь — открывается карточка
     """
     results = fuzzy_search_drink(query)
     if not results:
         return False
 
     if len(results) == 1:
+        # Одно совпадение — сразу карточка
         name, volume, kcal, protein, fat, carbs = results[0]
+        markup = types.InlineKeyboardMarkup()
+        markup.row(types.InlineKeyboardButton(
+            "🛒 В корзину",
+            callback_data=f"add_drink_to_cart|{name}"
+        ))
+        for row in back_markup.keyboard:
+            markup.row(*row)
         bot.send_message(
             chat_id,
             _format_drink_card(name, volume, kcal, protein, fat, carbs),
@@ -513,15 +534,21 @@ def search_and_send_drink(chat_id, query: str, markup):
             reply_markup=markup
         )
     else:
-        # Несколько похожих — показываем все
-        text = "🥤 <b>Похожие напитки:</b>\n\n"
+        # Несколько — список кнопок, каждая открывает карточку
+        markup = types.InlineKeyboardMarkup()
         for name, volume, kcal, protein, fat, carbs in results:
-            text += (
-                f"<b>{name}</b> {volume} мл\n"
-                f"Калории: {kcal} ккал | Б: {protein} г | Ж: {fat} г | У: {carbs} г\n"
-                f"─────────────\n"
-            )
-        bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+            markup.add(types.InlineKeyboardButton(
+                f"🥤 {name} ({volume} мл)",
+                callback_data=f"drink_card|{name}"
+            ))
+        for row in back_markup.keyboard:
+            markup.row(*row)
+        bot.send_message(
+            chat_id,
+            "🥤 <b>Похожие напитки:</b>",
+            parse_mode="HTML",
+            reply_markup=markup
+        )
 
     return True
 
@@ -537,11 +564,29 @@ def _get_back_cb(restaurant_name):
 
 
 def ask_for_dish(chat_id, restaurant, message_id=None):
-    markup = types.InlineKeyboardMarkup()
-    # Кнопка «Назад» на экране ввода блюда → всегда в главное меню
-    markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="back_1"))
+    rest_key = next((k for k, v in RESTAURANT_MAP.items() if v == restaurant), None)
 
-    text = f"Введите название блюда из <b>{restaurant}</b>" if restaurant else "❌ Некорректный ресторан"
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="back_1"))
+    # Кнопки быстрого доступа с контекстом ресторана
+    if rest_key:
+        markup.row(
+            types.InlineKeyboardButton(
+                f"📋 Все блюда {restaurant}",
+                callback_data=f"bmenu_rest|{rest_key}"
+            )
+        )
+        markup.row(
+            types.InlineKeyboardButton(
+                f"🎯 Найти по цели в {restaurant}",
+                callback_data=f"goal_rest|{rest_key}"
+            )
+        )
+
+    text = (
+        f"Напишите блюдо из <b>{restaurant}</b> или выберите действие ниже"
+        if restaurant else "❌ Некорректный ресторан"
+    )
 
     if message_id:
         msg = bot.edit_message_text(
@@ -637,6 +682,124 @@ def sort_by(section_id, criterion):
     cur.close()
     conn.close()
     return [row[0] for row in rows]
+
+
+def _format_top_row(dish_name, restaurant_name, kcal, protein, fat, carbs, dish_id, criterion):
+    """Форматирует строку топ-5 с выделением ключевого параметра по цели."""
+    goal_labels = {
+        "protein": "protein",
+        "ratio":   "ratio",
+        "fat":     "fat",
+        "carbs":   "carbs",
+    }
+    # Выделяем ключевой параметр жирным
+    b = f"<b>Б: {protein} г</b>" if criterion == "protein" else f"Б: {protein} г"
+    j = f"<b>Ж: {fat} г</b>"     if criterion == "fat"     else f"Ж: {fat} г"
+    u = f"<b>У: {carbs} г</b>"   if criterion == "carbs"   else f"У: {carbs} г"
+    k = f"<b>{kcal} ккал</b>"    if criterion == "ratio"   else f"{kcal} ккал"
+
+    return (
+        f"<b>{dish_name}</b> ({restaurant_name})\n"
+        f"{b} | {j} | {u} | {k}\n"
+        f"🆔 ID: <code>{dish_id}</code>\n"
+        f"──────────────────────\n"
+    )
+
+
+def _send_top_by_category(chat_id, user_id, criterion):
+    """Показывает топ-5 по категории с выделением нужного параметра."""
+    cat_id = user_cat_id.get(user_id)
+    if not cat_id:
+        bot.send_message(chat_id, "❌ Сначала выберите категорию")
+        return
+
+    sorted_ids = sort_by(cat_id, criterion)
+    if not sorted_ids:
+        bot.send_message(chat_id, "Блюд нет 😢")
+        return
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    goal_titles = {
+        "protein": "💪 Больше белка",
+        "ratio":   "🔥 Меньше калорий",
+        "fat":     "🥑 Меньше жира",
+        "carbs":   "🍞 Меньше углеводов",
+    }
+    text = f"🏆 <b>Топ-5 — {goal_titles[criterion]}:</b>\n\n"
+    for dish_id in sorted_ids:
+        cur.execute(
+            "SELECT dish, restaurant, kcal, protein, fat, carbs FROM dishes WHERE id = %s",
+            (dish_id,)
+        )
+        row = cur.fetchone()
+        if not row:
+            continue
+        dish_name, restaurant_name, kcal, protein, fat, carbs = row
+        text += _format_top_row(dish_name, restaurant_name, kcal, protein, fat, carbs, dish_id, criterion)
+
+    cur.close()
+    conn.close()
+    text += "\n👉 Отправьте <b>ID блюда</b>, чтобы добавить в корзину"
+    user_state[user_id] = "WAIT_DISH_ID"
+    user_goal[user_id] = None  # сбрасываем цель после использования
+    bot.send_message(chat_id, text, parse_mode="HTML")
+
+
+def _send_top_by_restaurant(chat_id, user_id):
+    """Показывает топ-5 по ресторану с выделением нужного параметра."""
+    criterion = user_goal.get(user_id)
+    restaurant_slug = user_restaurant.get(user_id)
+    restaurant_name = RESTAURANT_MAP.get(restaurant_slug)
+
+    if not restaurant_name:
+        bot.send_message(chat_id, "❌ Неизвестный ресторан")
+        return
+    if not criterion:
+        bot.send_message(chat_id, "❌ Сначала выберите цель")
+        return
+
+    order_map = {
+        "ratio":   "(protein * 4.0) / NULLIF(kcal, 0) DESC",
+        "protein": "protein DESC",
+        "fat":     "fat ASC",
+        "carbs":   "carbs ASC",
+    }
+    order = order_map.get(criterion)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT id, dish, kcal, protein, fat, carbs
+        FROM dishes
+        WHERE restaurant = %s AND sectionid <> 9 AND sectionid <> 10
+        ORDER BY {order}
+        LIMIT 5
+    """, (restaurant_name,))
+    dishes = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    if not dishes:
+        bot.send_message(chat_id, "❌ Блюд не найдено")
+        return
+
+    goal_titles = {
+        "protein": "💪 Больше белка",
+        "ratio":   "🔥 Меньше калорий",
+        "fat":     "🥑 Меньше жира",
+        "carbs":   "🍞 Меньше углеводов",
+    }
+    text = f"🏆 <b>{restaurant_name} — {goal_titles[criterion]}:</b>\n\n"
+    for d in dishes:
+        dish_id, dish_name, kcal, protein, fat, carbs = d
+        text += _format_top_row(dish_name, restaurant_name, kcal, protein, fat, carbs, dish_id, criterion)
+
+    text += "\n👉 Отправьте <b>ID блюда</b>, чтобы добавить в корзину"
+    user_state[user_id] = "WAIT_DISH_ID"
+    user_goal[user_id] = None  # сбрасываем цель после использования
+    bot.send_message(chat_id, text, parse_mode="HTML")
 
 
 # ─── ПРОСМОТР МЕНЮ РЕСТОРАНА ──────────────────────────────────────────────────
@@ -935,25 +1098,25 @@ def callback_message(callback):
         cur.close()
         conn.close()
 
-        # Кнопка «Назад» — в тот же ресторан если знаем, иначе в главное меню
-        last_rest = user_last_restaurant.get(user_id)
-        back_cb = _get_back_cb(last_rest) if last_rest else "back_1"
-
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data=back_cb))
-        markup.row(types.InlineKeyboardButton(
-            "🛒 Добавить блюдо в корзину.",
-            callback_data=f"add_dish_to_cart|{dishes_id}"
-        ))
-
         if row:
-            # Обновляем last_rest из данных самого блюда (на случай если пришли из истории)
-            user_last_restaurant[user_id] = row[1]
-            text = format_dish_message(row)
-            bot.send_message(chat_id, text, parse_mode='HTML', reply_markup=markup)
+            restaurant_name = row[1]
+            user_last_restaurant[user_id] = restaurant_name
+            back_cb = _get_back_cb(restaurant_name)
+
+            markup = types.InlineKeyboardMarkup()
+            markup.row(types.InlineKeyboardButton(
+                f"🔍 Ещё блюдо из {restaurant_name}",
+                callback_data=back_cb
+            ))
+            markup.row(types.InlineKeyboardButton(
+                "🛒 В корзину",
+                callback_data=f"add_dish_to_cart|{dishes_id}"
+            ))
+
+            bot.send_message(chat_id, format_dish_message(row), parse_mode='HTML', reply_markup=markup)
             add_to_history(user_id, row[0], row[1])
         else:
-            bot.send_message(chat_id, "Блюдо не найдено.", reply_markup=markup)
+            bot.send_message(chat_id, "Блюдо не найдено.")
 
     # ── Корзина ───────────────────────────────────────────────────────────────
     elif data == "show_cart":
@@ -970,11 +1133,112 @@ def callback_message(callback):
         if result:
             dish_name, restaurant_name = result
             msg = add_to_cart(user_id, dish_name, restaurant_name)
+            # Подсказка про корзину — только первый раз
+            if user_id not in user_cart_hinted:
+                user_cart_hinted.add(user_id)
+                bot.send_message(
+                    chat_id,
+                    "💡 Корзина считает суммарное КБЖУ всех добавленных блюд. "
+                    "Удобно если заказываешь несколько позиций."
+                )
             bot.send_message(chat_id, msg)
 
     elif data == "del_cart":
         clear_cart(user_id)
         bot.send_message(chat_id, "✅ Ваша корзина успешно очищена!")
+
+    elif data.startswith("drink_card|"):
+        # Открыть карточку напитка по названию
+        drink_name = data.split("|", 1)[1]
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT name, volume_ml, kcal, protein, fat, carbs FROM universal_drinks WHERE name = %s",
+            (drink_name,)
+        )
+        drink = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if drink:
+            name, volume, kcal, protein, fat, carbs = drink
+            markup = types.InlineKeyboardMarkup()
+            markup.row(types.InlineKeyboardButton(
+                "🛒 В корзину",
+                callback_data=f"add_drink_to_cart|{name}"
+            ))
+            markup.row(types.InlineKeyboardButton(
+                "⬅️ Назад",
+                callback_data="back_1"
+            ))
+            bot.send_message(
+                chat_id,
+                _format_drink_card(name, volume, kcal, protein, fat, carbs),
+                parse_mode="HTML",
+                reply_markup=markup
+            )
+        else:
+            bot.send_message(chat_id, "❌ Напиток не найден")
+
+    elif data.startswith("add_drink_to_cart|"):
+        # Добавить универсальный напиток в корзину
+        drink_name = data.split("|", 1)[1]
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT name, volume_ml, kcal, protein, fat, carbs FROM universal_drinks WHERE name = %s",
+            (drink_name,)
+        )
+        drink = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if not drink:
+            bot.send_message(chat_id, "❌ Напиток не найден")
+        else:
+            name, volume, kcal, protein, fat, carbs = drink
+            # Добавляем в cart_items как обычное блюдо, ресторан = "Универсальный"
+            conn = get_conn()
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    "SELECT id FROM cart_items WHERE user_id = %s AND dish = %s AND restaurant = %s",
+                    (user_id, name, "Универсальный напиток")
+                )
+                existing = cur.fetchone()
+                if existing:
+                    cur.execute("""
+                        UPDATE cart_items
+                        SET quantity = quantity + 1,
+                            weight   = weight   + %s,
+                            kcal     = kcal     + %s,
+                            protein  = protein  + %s,
+                            fat      = fat      + %s,
+                            carbs    = carbs    + %s
+                        WHERE id = %s
+                    """, (volume, kcal, protein, fat, carbs, existing[0]))
+                else:
+                    cur.execute("""
+                        INSERT INTO cart_items
+                            (user_id, dish, restaurant, quantity, weight, kcal, protein, fat, carbs)
+                        VALUES (%s, %s, %s, 1, %s, %s, %s, %s, %s)
+                    """, (user_id, name, "Универсальный напиток", volume, kcal, protein, fat, carbs))
+                conn.commit()
+                if user_id not in user_cart_hinted:
+                    user_cart_hinted.add(user_id)
+                    bot.send_message(
+                        chat_id,
+                        "💡 Корзина считает суммарное КБЖУ всех добавленных блюд. "
+                        "Удобно если заказываешь несколько позиций."
+                    )
+                bot.send_message(chat_id, f"✅ {name} добавлен в корзину!")
+            except Exception as e:
+                conn.rollback()
+                bot.send_message(chat_id, "❌ Ошибка при добавлении напитка")
+                print("add_drink_to_cart error:", e)
+            finally:
+                cur.close()
+                conn.close()
 
     elif data == "del_dish":
         msg1 = bot.send_message(
@@ -988,24 +1252,54 @@ def callback_message(callback):
         bot.send_message(chat_id, "💡 Спасибо за ваши предложения!\nПожалуйста, заполните форму по ссылке ниже 👇")
         bot.send_message(chat_id, "https://docs.google.com/forms/d/e/1FAIpQLScy2RrdUY9-B7U2kOzeXWhjXPOWre5TdfTH5kSnYpQtkfh2xg/viewform?usp=sharing&ouid=105348996454328127243")
 
-    # ── Выбор по категориям ───────────────────────────────────────────────────
+    # ── Подбор по цели (шаг 1 — выбор цели) ─────────────────────────────────
     elif data == "cats":
         markup = types.InlineKeyboardMarkup()
-        markup.add(
-            types.InlineKeyboardButton("По блюду 🍽️",     callback_data="bludo"),
-            types.InlineKeyboardButton("По ресторану 🏢", callback_data="restaurant")
+        markup.row(
+            types.InlineKeyboardButton("💪 Больше белка",     callback_data="goal|protein"),
+            types.InlineKeyboardButton("🔥 Меньше калорий",   callback_data="goal|ratio"),
+        )
+        markup.row(
+            types.InlineKeyboardButton("🥑 Меньше жира",      callback_data="goal|fat"),
+            types.InlineKeyboardButton("🍞 Меньше углеводов", callback_data="goal|carbs"),
         )
         markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data='back_1'))
         bot.edit_message_text(
             chat_id=chat_id,
             message_id=callback.message.message_id,
-            text="Выберите способ поиска: 🔍",
+            text="🎯 <b>Какая цель?</b>",
             parse_mode='HTML',
             reply_markup=markup
         )
 
-    # ── По ресторану ──────────────────────────────────────────────────────────
-    elif data == "restaurant":
+    # ── Шаг 2 — выбрана цель, выбираем где искать ────────────────────────────
+    elif data.startswith("goal|"):
+        criterion = data.split("|")[1]
+        user_goal[user_id] = criterion
+
+        markup = types.InlineKeyboardMarkup()
+        markup.row(
+            types.InlineKeyboardButton("🏢 По ресторану", callback_data="goal_type|restaurant"),
+            types.InlineKeyboardButton("🍽️ По типу блюда", callback_data="goal_type|bludo"),
+        )
+        markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data='cats'))
+
+        goal_labels = {
+            "protein": "💪 Больше белка",
+            "ratio":   "🔥 Меньше калорий",
+            "fat":     "🥑 Меньше жира",
+            "carbs":   "🍞 Меньше углеводов",
+        }
+        bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=callback.message.message_id,
+            text=f"Цель: <b>{goal_labels[criterion]}</b>\n\n🔍 <b>Где искать?</b>",
+            parse_mode='HTML',
+            reply_markup=markup
+        )
+
+    # ── Шаг 3а — по ресторану ─────────────────────────────────────────────────
+    elif data == "goal_type|restaurant":
         markup = types.InlineKeyboardMarkup()
         markup.row(
             types.InlineKeyboardButton("McDonald's",  callback_data="rest|mcdonalds"),
@@ -1025,16 +1319,17 @@ def callback_message(callback):
             types.InlineKeyboardButton("Bahandi",     callback_data="rest|bahandi"),
             types.InlineKeyboardButton("Coffee Boom", callback_data="rest|coffeeboom")
         )
-        markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data='back_1'))
+        markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data='cats'))
         bot.edit_message_text(
             chat_id=chat_id,
             message_id=callback.message.message_id,
-            text="Выберите ресторан для поиска блюда 🔍",
+            text="🏢 <b>Выберите ресторан:</b>",
+            parse_mode='HTML',
             reply_markup=markup
         )
 
-    # ── По блюду (категории) ──────────────────────────────────────────────────
-    elif data == "bludo":
+    # ── Шаг 3б — по типу блюда ────────────────────────────────────────────────
+    elif data == "goal_type|bludo":
         markup = types.InlineKeyboardMarkup()
         markup.row(
             types.InlineKeyboardButton("Закуски🍟",        callback_data="cat|Закуски"),
@@ -1056,32 +1351,39 @@ def callback_message(callback):
             types.InlineKeyboardButton("Завтраки🍳",       callback_data="cat|Завтраки"),
             types.InlineKeyboardButton("Супы🍲",           callback_data="cat|Супы")
         )
-        bot.send_message(chat_id, "Выберите категорию блюд:", reply_markup=markup)
-
-    # ── Выбор критерия сортировки по ресторану ────────────────────────────────
-    elif data.startswith("rest|"):
-        restaurant = data.split("|")[1]
-        user_restaurant[user_id] = restaurant
-
-        markup = types.InlineKeyboardMarkup()
-        markup.row(types.InlineKeyboardButton("Лучшее соотношение белков/кбжу", callback_data="sort_rest|ratio"))
-        markup.row(
-            types.InlineKeyboardButton("Больше всего белка",   callback_data="sort_rest|protein"),
-            types.InlineKeyboardButton("Меньше всего жиров",   callback_data="sort_rest|fat")
-        )
-        markup.row(types.InlineKeyboardButton("Меньше всего углеводов", callback_data="sort_rest|carbs"))
-        markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data="restaurant"))
-
-        rest_display = RESTAURANT_MAP.get(restaurant, restaurant)
+        markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data='cats'))
         bot.edit_message_text(
             chat_id=chat_id,
             message_id=callback.message.message_id,
-            text=f"🍽 Ресторан: <b>{rest_display}</b>\nВыберите критерий:",
-            parse_mode="HTML",
+            text="🍽️ <b>Выберите тип блюда:</b>",
+            parse_mode='HTML',
             reply_markup=markup
         )
 
-    # ── Выбор критерия сортировки по категории блюда ─────────────────────────
+    # ── Подбор по цели прямо из ресторана (шаг 1 — цель) ─────────────────────
+    elif data.startswith("goal_rest|"):
+        rest_key = data.split("|", 1)[1]
+        user_restaurant[user_id] = rest_key
+        rest_name = RESTAURANT_MAP.get(rest_key, rest_key)
+
+        markup = types.InlineKeyboardMarkup()
+        markup.row(
+            types.InlineKeyboardButton("💪 Больше белка",     callback_data=f"sort_rest|protein"),
+            types.InlineKeyboardButton("🔥 Меньше калорий",   callback_data=f"sort_rest|ratio"),
+        )
+        markup.row(
+            types.InlineKeyboardButton("🥑 Меньше жира",      callback_data=f"sort_rest|fat"),
+            types.InlineKeyboardButton("🍞 Меньше углеводов", callback_data=f"sort_rest|carbs"),
+        )
+        markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data=f"back_rest|{rest_key}"))
+        bot.send_message(
+            chat_id,
+            f"🎯 <b>Какая цель в {rest_name}?</b>",
+            parse_mode='HTML',
+            reply_markup=markup
+        )
+
+    # ── Шаг 4 — выбор критерия по категории ──────────────────────────────────
     elif data.startswith("cat|"):
         category = data.split("|")[1]
         conn = get_conn()
@@ -1094,111 +1396,72 @@ def callback_message(callback):
         if not row:
             bot.send_message(chat_id, "Категория не найдена 😢")
             return
-        user_cat_id[user_id] = row[0]  # сохраняем per-user, не глобально
+        user_cat_id[user_id] = row[0]
 
-        markup = types.InlineKeyboardMarkup()
-        markup.row(types.InlineKeyboardButton("Лучшее соотношение белков/кбжу", callback_data="sort|ratio"))
-        markup.row(
-            types.InlineKeyboardButton("Больше всего белка",   callback_data="sort|protein"),
-            types.InlineKeyboardButton("Меньше всего жиров",   callback_data="sort|fat")
-        )
-        markup.row(types.InlineKeyboardButton("Меньше всего углеводов", callback_data="sort|carbs"))
-        markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data="restaurant"))
-        bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=callback.message.message_id,
-            text=f"📂 Категория: <b>{category}</b>\nВыберите критерий сортировки:",
-            parse_mode="HTML",
-            reply_markup=markup
-        )
+        # Берём цель пользователя если уже выбрана, иначе спрашиваем
+        criterion = user_goal.get(user_id)
+        if criterion:
+            # Цель уже знаем — сразу показываем результат
+            _send_top_by_category(chat_id, user_id, criterion)
+        else:
+            markup = types.InlineKeyboardMarkup()
+            markup.row(
+                types.InlineKeyboardButton("💪 Больше белка",     callback_data="sort|protein"),
+                types.InlineKeyboardButton("🔥 Меньше калорий",   callback_data="sort|ratio"),
+            )
+            markup.row(
+                types.InlineKeyboardButton("🥑 Меньше жира",      callback_data="sort|fat"),
+                types.InlineKeyboardButton("🍞 Меньше углеводов", callback_data="sort|carbs"),
+            )
+            markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data="cats"))
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=callback.message.message_id,
+                text=f"📂 <b>{category}</b> — какая цель?",
+                parse_mode="HTML",
+                reply_markup=markup
+            )
 
     # ── Топ-5 по категории ────────────────────────────────────────────────────
     elif data.startswith("sort|"):
         criterion = data.split("|")[1]
-        cat_id = user_cat_id.get(user_id)
-        if not cat_id:
-            bot.send_message(chat_id, "❌ Сначала выберите категорию")
-            return
-        sorted_ids = sort_by(cat_id, criterion)
-        if not sorted_ids:
-            bot.send_message(chat_id, "Блюд нет 😢")
-            return
+        user_goal[user_id] = criterion
+        _send_top_by_category(chat_id, user_id, criterion)
 
-        conn = get_conn()
-        cur = conn.cursor()
-        text = "🍽 <b>Топ-5 блюд:</b>\n\n"
-        for dish_id in sorted_ids:
-            cur.execute(
-                "SELECT dish, restaurant, kcal, protein, fat, carbs FROM dishes WHERE id = %s",
-                (dish_id,)
+    # ── Шаг 4 — выбор ресторана для подбора по цели ──────────────────────────
+    elif data.startswith("rest|"):
+        restaurant = data.split("|")[1]
+        user_restaurant[user_id] = restaurant
+        criterion = user_goal.get(user_id)
+
+        if criterion:
+            # Цель уже знаем — сразу показываем результат
+            _send_top_by_restaurant(chat_id, user_id)
+        else:
+            markup = types.InlineKeyboardMarkup()
+            markup.row(
+                types.InlineKeyboardButton("💪 Больше белка",     callback_data="sort_rest|protein"),
+                types.InlineKeyboardButton("🔥 Меньше калорий",   callback_data="sort_rest|ratio"),
             )
-            row = cur.fetchone()
-            if not row:
-                continue
-            dish_name, restaurant_name, kcal, protein, fat, carbs = row
-            text += (
-                f"<b>{dish_name}</b> ({restaurant_name})\n"
-                f"Б: {protein} г | Ж: {fat} г | У: {carbs} г | {kcal} ккал\n"
-                f"🆔 ID: <code>{dish_id}</code>\n"
-                f"──────────────────────\n"
+            markup.row(
+                types.InlineKeyboardButton("🥑 Меньше жира",      callback_data="sort_rest|fat"),
+                types.InlineKeyboardButton("🍞 Меньше углеводов", callback_data="sort_rest|carbs"),
             )
-        cur.close()
-        conn.close()
-        text += "\n👉 Отправьте <b>ID блюда</b>, чтобы добавить в корзину"
-        user_state[user_id] = "WAIT_DISH_ID"
-        bot.send_message(chat_id, text, parse_mode="HTML")
+            markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data="goal_type|restaurant"))
+            rest_display = RESTAURANT_MAP.get(restaurant, restaurant)
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=callback.message.message_id,
+                text=f"🏢 <b>{rest_display}</b> — какая цель?",
+                parse_mode="HTML",
+                reply_markup=markup
+            )
 
     # ── Топ-5 по ресторану ────────────────────────────────────────────────────
     elif data.startswith("sort_rest|"):
         criterion = data.split("|")[1]
-        restaurant_slug = user_restaurant.get(user_id)
-        restaurant_name = RESTAURANT_MAP.get(restaurant_slug)
-
-        if not restaurant_name:
-            bot.send_message(chat_id, "❌ Неизвестный ресторан")
-            return
-
-        conn = get_conn()
-        cur = conn.cursor()
-
-        order_map = {
-            "ratio":   "(protein * 4.0) / NULLIF(kcal, 0) DESC",
-            "protein": "protein DESC",
-            "fat":     "fat ASC",
-            "carbs":   "carbs ASC",
-        }
-        order = order_map.get(criterion)
-        if not order:
-            return
-
-        cur.execute(f"""
-            SELECT id, dish, protein, fat, carbs, kcal
-            FROM dishes
-            WHERE restaurant = %s AND sectionid <> 9 AND sectionid <> 10
-            ORDER BY {order}
-            LIMIT 5
-        """, (restaurant_name,))
-        dishes = cur.fetchall()
-        cur.close()
-        conn.close()
-
-        if not dishes:
-            bot.send_message(chat_id, "❌ Блюд не найдено")
-            return
-
-        text = "🍽 <b>Топ-5 блюд:</b>\n\n"
-        for i, d in enumerate(dishes, 1):
-            text += (
-                f"{i}. <b>{d[1]}</b>\n"
-                f"Б {d[2]}г | Ж {d[3]}г | У {d[4]}г | {d[5]} ккал\n"
-                f"───────\nID: <code>{d[0]}</code>\n\n"
-            )
-        user_state[user_id] = "WAIT_DISH_ID"
-        bot.send_message(
-            chat_id,
-            text + "👉 Отправьте ID блюда, чтобы добавить в корзину",
-            parse_mode="HTML"
-        )
+        user_goal[user_id] = criterion
+        _send_top_by_restaurant(chat_id, user_id)
 
 
 # ─── МАППИНГ РЕСТОРАНОВ ПО НИЖНЕМУ РЕГИСТРУ ──────────────────────────────────
@@ -1407,7 +1670,10 @@ def dish_handling_func_1(message, restaurant):
 
     if not all_dishes:
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data=back_cb))
+        markup.add(types.InlineKeyboardButton(
+            f"🔍 Ещё блюдо из {restaurant_name}",
+            callback_data=back_cb
+        ))
 
         found = search_and_send_drink(message.chat.id, dish_input, markup)
         if not found:
@@ -1443,10 +1709,12 @@ def dish_handling_func_1(message, restaurant):
             markup.add(types.InlineKeyboardButton(name, callback_data=f"dish|{res[0]}"))
             added = True
 
-    markup.add(types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data=back_cb))
+    markup.add(types.InlineKeyboardButton(
+        f"🔍 Ещё блюдо из {restaurant_name}",
+        callback_data=back_cb
+    ))
 
     # Параллельно ищем в универсальных напитках — всегда, независимо от результата блюд
-    # Это кросс-ресторанный поиск: «фьюс ти» найдётся в любом ресторане
     drink_results = fuzzy_search_drink(dish_input)
 
     if exact_dish_id:
@@ -1461,9 +1729,12 @@ def dish_handling_func_1(message, restaurant):
 
         if row:
             markup2 = types.InlineKeyboardMarkup()
-            markup2.add(types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data=back_cb))
+            markup2.add(types.InlineKeyboardButton(
+                f"🔍 Ещё блюдо из {restaurant_name}",
+                callback_data=back_cb
+            ))
             markup2.row(types.InlineKeyboardButton(
-                "🛒 Добавить блюдо в корзину.",
+                "🛒 В корзину",
                 callback_data=f"add_dish_to_cart|{exact_dish_id}"
             ))
             bot.send_message(
@@ -1480,11 +1751,13 @@ def dish_handling_func_1(message, restaurant):
         bot.send_message(message.chat.id, "Похожие блюда:", reply_markup=markup)
 
     elif drink_results:
-        # Блюд не нашли — показываем напитки
         cur.close()
         conn.close()
         drink_markup = types.InlineKeyboardMarkup()
-        drink_markup.add(types.InlineKeyboardButton("🔍 Искать другое блюдо.", callback_data=back_cb))
+        drink_markup.add(types.InlineKeyboardButton(
+            f"🔍 Ещё блюдо из {restaurant_name}",
+            callback_data=back_cb
+        ))
         search_and_send_drink(message.chat.id, dish_input, drink_markup)
 
     else:
@@ -1496,8 +1769,7 @@ def dish_handling_func_1(message, restaurant):
             reply_markup=markup
         )
 
-    # Если нашли точное блюдо И напитки — напитки тоже показываем отдельным сообщением
-    # Например написали "кола" — нашли блюдо "кола" в ресторане И Coca-Cola из напитков
+    # Если нашли точное блюдо И напитки — показываем напитки отдельным сообщением
     if exact_dish_id and drink_results:
         drink_markup = types.InlineKeyboardMarkup()
         text = "🥤 <b>Также нашли в универсальных напитках:</b>\n\n"
