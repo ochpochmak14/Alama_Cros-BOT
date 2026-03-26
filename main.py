@@ -95,21 +95,29 @@ def format_dish_message(row):
 
 def build_main_inline_markup():
     markup = types.InlineKeyboardMarkup()
-    # Первичные — рестораны
     markup.row(
-        types.InlineKeyboardButton("McDonald's", callback_data='mcdonalds'),
-        types.InlineKeyboardButton("KFC",        callback_data='kfc'),
-        types.InlineKeyboardButton("Popeyes",    callback_data='popeyes'),
+        types.InlineKeyboardButton("McDonald's",  callback_data='mcdonalds'),
+        types.InlineKeyboardButton("KFC",         callback_data='kfc'),
+        types.InlineKeyboardButton("Popeyes",     callback_data='popeyes'),
     )
     markup.row(
         types.InlineKeyboardButton("Burger King", callback_data='burgerk'),
         types.InlineKeyboardButton("Tanuki",      callback_data='tanuki'),
         types.InlineKeyboardButton("TomYumBar",   callback_data='tomyumbar'),
     )
-    # Вторичные — служебные действия
     markup.row(
-        types.InlineKeyboardButton("🎯 Подбор по цели",   callback_data='cats'),
-        types.InlineKeyboardButton("🛒 Корзина",          callback_data='show_cart'),
+        types.InlineKeyboardButton("Bella Ciao",  callback_data='bella_ciao'),
+        types.InlineKeyboardButton("Додо пицца",  callback_data='dodo'),
+        types.InlineKeyboardButton("Hardee's",    callback_data='hardees'),
+    )
+    markup.row(
+        types.InlineKeyboardButton("Wendy's",     callback_data='wendys'),
+        types.InlineKeyboardButton("Bahandi",     callback_data='bahandi'),
+        types.InlineKeyboardButton("Coffee Boom", callback_data='coffeeboom'),
+    )
+    markup.row(
+        types.InlineKeyboardButton("🎯 Подбор по цели",    callback_data='cats'),
+        types.InlineKeyboardButton("🛒 Корзина",           callback_data='show_cart'),
     )
     markup.row(
         types.InlineKeyboardButton("📜 История поиска",      callback_data='history'),
@@ -272,8 +280,8 @@ def add_to_cart(user_id, dish_name, restaurant):
             """, (weight, kcal, protein, fat, carbs, existing[0]))
         else:
             cur.execute("""
-                INSERT INTO cart_items(user_id, dish, restaurant, weight, kcal, protein, fat, carbs)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO cart_items(user_id, dish, restaurant, quantity, weight, kcal, protein, fat, carbs)
+                VALUES (%s, %s, %s, 1, %s, %s, %s, %s, %s)
             """, (user_id, dish_name, restaurant, weight, kcal, protein, fat, carbs))
 
         conn.commit()
@@ -685,24 +693,24 @@ def show_history(callback):
 
 # ─── СОРТИРОВКА ───────────────────────────────────────────────────────────────
 
-def sort_by(section_id, criterion):
+def sort_by(section_id, criterion, limit=5, offset=0):
     conn = get_conn()
     cur = conn.cursor()
     if criterion == "protein":
-        cur.execute("SELECT id FROM dishes WHERE sectionid = %s ORDER BY protein DESC LIMIT 5", (section_id,))
+        cur.execute("SELECT id FROM dishes WHERE sectionid = %s ORDER BY protein DESC LIMIT %s OFFSET %s", (section_id, limit, offset))
     elif criterion == "fat":
-        cur.execute("SELECT id FROM dishes WHERE sectionid = %s ORDER BY fat ASC LIMIT 5", (section_id,))
+        cur.execute("SELECT id FROM dishes WHERE sectionid = %s ORDER BY fat ASC LIMIT %s OFFSET %s", (section_id, limit, offset))
     elif criterion == "carbs":
-        cur.execute("SELECT id FROM dishes WHERE sectionid = %s ORDER BY carbs ASC LIMIT 5", (section_id,))
+        cur.execute("SELECT id FROM dishes WHERE sectionid = %s ORDER BY carbs ASC LIMIT %s OFFSET %s", (section_id, limit, offset))
     elif criterion == "kcal":
-        cur.execute("SELECT id FROM dishes WHERE sectionid = %s AND kcal > 0 ORDER BY kcal ASC LIMIT 5", (section_id,))
+        cur.execute("SELECT id FROM dishes WHERE sectionid = %s AND kcal > 0 ORDER BY kcal ASC LIMIT %s OFFSET %s", (section_id, limit, offset))
     elif criterion == "ratio":
         cur.execute("""
             SELECT id FROM dishes
             WHERE sectionid = %s AND kcal > 0
             ORDER BY protein * 4.0 / kcal DESC
-            LIMIT 5
-        """, (section_id,))
+            LIMIT %s OFFSET %s
+        """, (section_id, limit, offset))
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -724,16 +732,16 @@ def _format_top_row(dish_name, restaurant_name, kcal, protein, fat, carbs, dish_
     )
 
 
-def _send_top_by_category(chat_id, user_id, criterion):
-    """Показывает топ-5 по категории с выделением нужного параметра."""
+def _send_top_by_category(chat_id, user_id, criterion, offset=0):
+    """Показывает топ по категории с пагинацией. offset=0 — первые 5, offset=5 — следующие 5."""
     cat_id = user_cat_id.get(user_id)
     if not cat_id:
         bot.send_message(chat_id, "❌ Сначала выберите категорию")
         return
 
-    sorted_ids = sort_by(cat_id, criterion)
+    sorted_ids = sort_by(cat_id, criterion, limit=5, offset=offset)
     if not sorted_ids:
-        bot.send_message(chat_id, "Блюд нет 😢")
+        bot.send_message(chat_id, "Больше блюд нет 😢")
         return
 
     conn = get_conn()
@@ -746,7 +754,8 @@ def _send_top_by_category(chat_id, user_id, criterion):
         "fat":     "🥑 Меньше жира",
         "carbs":   "🍞 Меньше углеводов",
     }
-    text = f"🏆 <b>Топ-5 — {goal_titles.get(criterion, criterion)}:</b>\n\n"
+    page_label = f"Места {offset+1}–{offset+len(sorted_ids)}"
+    text = f"🏆 <b>{goal_titles.get(criterion, criterion)} — {page_label}:</b>\n\n"
     for dish_id in sorted_ids:
         cur.execute(
             "SELECT dish, restaurant, kcal, protein, fat, carbs FROM dishes WHERE id = %s",
@@ -760,14 +769,34 @@ def _send_top_by_category(chat_id, user_id, criterion):
 
     cur.close()
     conn.close()
+
+    # Кнопки навигации
+    markup = types.InlineKeyboardMarkup()
+    next_offset = offset + 5
+    next_ids = sort_by(cat_id, criterion, limit=1, offset=next_offset)
+    if next_ids:
+        markup.row(types.InlineKeyboardButton(
+            f"▶️ Места {next_offset+1}–{next_offset+5}",
+            callback_data=f"top_cat_page|{criterion}|{next_offset}"
+        ))
+    if offset > 0:
+        prev_offset = max(0, offset - 5)
+        markup.row(types.InlineKeyboardButton(
+            f"◀️ Назад к местам {prev_offset+1}–{prev_offset+5}",
+            callback_data=f"top_cat_page|{criterion}|{prev_offset}"
+        ))
+
     text += "\n👉 Отправьте <b>ID блюда</b>, чтобы добавить в корзину"
+    bot.clear_step_handler_by_chat_id(chat_id)
     user_state[user_id] = "WAIT_DISH_ID"
-    user_goal[user_id] = None
-    bot.send_message(chat_id, text, parse_mode="HTML")
+    if offset == 0:
+        user_goal[user_id] = None
+    bot.send_message(chat_id, text, parse_mode="HTML",
+                     reply_markup=markup if markup.keyboard else None)
 
 
-def _send_top_by_restaurant(chat_id, user_id):
-    """Показывает топ-5 по ресторану с выделением нужного параметра."""
+def _send_top_by_restaurant(chat_id, user_id, offset=0):
+    """Показывает топ по ресторану с пагинацией."""
     criterion = user_goal.get(user_id)
     restaurant_slug = user_restaurant.get(user_id)
     restaurant_name = RESTAURANT_MAP.get(restaurant_slug)
@@ -799,14 +828,24 @@ def _send_top_by_restaurant(chat_id, user_id):
         WHERE restaurant = %s AND sectionid <> 9 AND sectionid <> 10
           AND kcal > 0
         ORDER BY {order}
-        LIMIT 5
-    """, (restaurant_name,))
+        LIMIT 5 OFFSET %s
+    """, (restaurant_name, offset))
     dishes = cur.fetchall()
+
+    # Проверяем есть ли следующая страница
+    cur.execute(f"""
+        SELECT id FROM dishes
+        WHERE restaurant = %s AND sectionid <> 9 AND sectionid <> 10
+          AND kcal > 0
+        ORDER BY {order}
+        LIMIT 1 OFFSET %s
+    """, (restaurant_name, offset + 5))
+    has_next = cur.fetchone() is not None
     cur.close()
     conn.close()
 
     if not dishes:
-        bot.send_message(chat_id, "❌ Блюд не найдено")
+        bot.send_message(chat_id, "Больше блюд нет 😢")
         return
 
     goal_titles = {
@@ -816,15 +855,33 @@ def _send_top_by_restaurant(chat_id, user_id):
         "fat":     "🥑 Меньше жира",
         "carbs":   "🍞 Меньше углеводов",
     }
-    text = f"🏆 <b>{restaurant_name} — {goal_titles.get(criterion, criterion)}:</b>\n\n"
+    page_label = f"Места {offset+1}–{offset+len(dishes)}"
+    text = f"🏆 <b>{restaurant_name} — {goal_titles.get(criterion, criterion)}</b>\n<i>{page_label}</i>\n\n"
     for d in dishes:
         dish_id, dish_name, kcal, protein, fat, carbs = d
         text += _format_top_row(dish_name, restaurant_name, kcal, protein, fat, carbs, dish_id, criterion)
 
+    # Кнопки навигации
+    markup = types.InlineKeyboardMarkup()
+    if has_next:
+        markup.row(types.InlineKeyboardButton(
+            f"▶️ Места {offset+6}–{offset+10}",
+            callback_data=f"top_rest_page|{criterion}|{offset+5}"
+        ))
+    if offset > 0:
+        prev_offset = max(0, offset - 5)
+        markup.row(types.InlineKeyboardButton(
+            f"◀️ Назад к местам {prev_offset+1}–{prev_offset+5}",
+            callback_data=f"top_rest_page|{criterion}|{prev_offset}"
+        ))
+
     text += "\n👉 Отправьте <b>ID блюда</b>, чтобы добавить в корзину"
+    bot.clear_step_handler_by_chat_id(chat_id)
     user_state[user_id] = "WAIT_DISH_ID"
-    user_goal[user_id] = None
-    bot.send_message(chat_id, text, parse_mode="HTML")
+    if offset == 0:
+        user_goal[user_id] = None
+    bot.send_message(chat_id, text, parse_mode="HTML",
+                     reply_markup=markup if markup.keyboard else None)
 
 
 # ─── ПРОСМОТР МЕНЮ РЕСТОРАНА ──────────────────────────────────────────────────
@@ -864,6 +921,10 @@ def send_browse_restaurant_picker(chat_id, message_id=None):
     markup.row(
         types.InlineKeyboardButton("Додо пицца",  callback_data="bmenu_rest|dodo"),
         types.InlineKeyboardButton("Bella Ciao",  callback_data="bmenu_rest|bella_ciao"),
+    )
+    markup.row(
+        types.InlineKeyboardButton("Wendy's",     callback_data="bmenu_rest|wendys"),
+        types.InlineKeyboardButton("Hardee's",    callback_data="bmenu_rest|hardees"),
     )
     markup.row(
         types.InlineKeyboardButton("Bahandi",     callback_data="bmenu_rest|bahandi"),
@@ -1059,6 +1120,8 @@ def callback_message(callback):
         cur.close()
         conn.close()
 
+        # Сбрасываем step_handler чтобы ввод числа шёл в handle_numeric_input
+        bot.clear_step_handler_by_chat_id(chat_id)
         user_state[user_id] = "WAIT_DISH_ID"
         user_last_restaurant[user_id] = restaurant_name
         send_browse_dishes(chat_id, restaurant_name, dishes, section_name, rest_key)
@@ -1080,6 +1143,8 @@ def callback_message(callback):
         cur.close()
         conn.close()
 
+        # Сбрасываем step_handler чтобы ввод числа шёл в handle_numeric_input
+        bot.clear_step_handler_by_chat_id(chat_id)
         user_state[user_id] = "WAIT_DISH_ID"
         user_last_restaurant[user_id] = restaurant_name
         send_browse_dishes(chat_id, restaurant_name, dishes, "Всё меню", rest_key)
@@ -1348,6 +1413,10 @@ def callback_message(callback):
             types.InlineKeyboardButton("Додо пицца",  callback_data="rest|dodo")
         )
         markup.row(
+            types.InlineKeyboardButton("Wendy's",     callback_data="rest|wendys"),
+            types.InlineKeyboardButton("Hardee's",    callback_data="rest|hardees")
+        )
+        markup.row(
             types.InlineKeyboardButton("Bahandi",     callback_data="rest|bahandi"),
             types.InlineKeyboardButton("Coffee Boom", callback_data="rest|coffeeboom")
         )
@@ -1457,6 +1526,21 @@ def callback_message(callback):
                 parse_mode="HTML",
                 reply_markup=markup
             )
+
+    # ── Пагинация топа по категории ──────────────────────────────────────────
+    elif data.startswith("top_cat_page|"):
+        _, criterion, offset_str = data.split("|")
+        offset = int(offset_str)
+        # Восстанавливаем user_goal для навигации назад
+        user_goal[user_id] = criterion
+        _send_top_by_category(chat_id, user_id, criterion, offset)
+
+    # ── Пагинация топа по ресторану ───────────────────────────────────────────
+    elif data.startswith("top_rest_page|"):
+        _, criterion, offset_str = data.split("|")
+        offset = int(offset_str)
+        user_goal[user_id] = criterion
+        _send_top_by_restaurant(chat_id, user_id, offset)
 
     # ── Топ-5 по категории ────────────────────────────────────────────────────
     elif data.startswith("sort|"):
