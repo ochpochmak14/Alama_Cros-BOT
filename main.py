@@ -2,19 +2,61 @@ import telebot
 from telebot import types
 import psycopg2
 import os
+import logging
+from cachetools import TTLCache
+from analytics_sqlite import log_event
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("kbju_bot")
 
 bot = telebot.TeleBot(os.getenv("BOT_TOKEN"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # ─── ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ────────────────────────────────────────────────────
 
-user_restaurant = {}   # для сортировки по ресторану в категориях
-user_state = {}        # для ожидания ввода ID блюда
-user_last_restaurant = {}  # для кнопки «Назад» — возврат в тот же ресторан
-user_cat_id = {}       # cat_id per user
-user_greeted = set()   # пользователи которым уже показали приветствие
-user_cart_hinted = set()  # пользователи которым уже показали подсказку про корзину
-user_goal = {}         # цель в "Подбор по цели": protein/fat/carbs/ratio
+_TTL   = 6 * 3600   # записи живут 6 часов без активности
+_UMAX  = 100_000    # не более 100 000 одновременных пользователей в кэше
+
+
+class _TTLSet:
+    """Set-совместимая обёртка над TTLCache (add / __contains__ / discard)."""
+    def __init__(self, maxsize: int, ttl: int):
+        self._c = TTLCache(maxsize=maxsize, ttl=ttl)
+
+    def __contains__(self, item):
+        return item in self._c
+
+    def add(self, item):
+        self._c[item] = True
+
+    def discard(self, item):
+        self._c.pop(item, None)
+
+
+user_restaurant    = TTLCache(maxsize=_UMAX, ttl=_TTL)
+user_state         = TTLCache(maxsize=_UMAX, ttl=_TTL)
+user_last_restaurant = TTLCache(maxsize=_UMAX, ttl=_TTL)
+user_cat_id        = TTLCache(maxsize=_UMAX, ttl=_TTL)
+user_greeted       = _TTLSet(maxsize=_UMAX, ttl=_TTL)
+user_cart_hinted   = _TTLSet(maxsize=_UMAX, ttl=_TTL)
+user_goal          = TTLCache(maxsize=_UMAX, ttl=_TTL)
+user_pending_source = TTLCache(maxsize=_UMAX, ttl=_TTL)
+
+# UTM-коды → имена источников (используются в ссылках: /start ig, /start doctor …)
+UTM_SOURCE_MAP = {
+    "ig":        "instagram",
+    "instagram": "instagram",
+    "doctor":    "doctor",
+    "friend":    "friend",
+    "fitness":   "fitness",
+}
+
+# ── Допустимые значения из callback_data (заполняются после RESTAURANT_MAP) ──
+ALLOWED_CRITERIA = {"protein", "fat", "carbs", "kcal", "ratio"}
+ALLOWED_SOURCES  = {"instagram", "doctor", "friend", "fitness", "other"}
 
 RESTAURANT_MAP = {
     "mcdonalds":  "McDonald's",
@@ -30,6 +72,7 @@ RESTAURANT_MAP = {
     "wendys":     "Wendy's",
     "hardees":    "Hardee's",
 }
+ALLOWED_REST_KEYS = frozenset(RESTAURANT_MAP.keys())
 
 
 # ─── БД ───────────────────────────────────────────────────────────────────────
@@ -157,14 +200,21 @@ def start(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
 
+    # Извлекаем UTM-параметр из /start <ref_code>
+    parts = message.text.split()
+    ref_code = parts[1].lower() if len(parts) > 1 else None
+    if ref_code:
+        user_pending_source[user_id] = UTM_SOURCE_MAP.get(ref_code, "other")
+
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT accepted FROM user_agreements WHERE user_id = %s", (user_id,))
     row = cur.fetchone()
+    is_new = not row or row[0] == 0
     cur.close()
     conn.close()
 
-    if not row or row[0] == 0:
+    if is_new:
         send_agreement(user_id, chat_id)
         return
 
@@ -178,6 +228,11 @@ def start(message):
             "👋 Привет! Я помогу узнать КБЖУ любого блюда из популярных ресторанов — "
             "калории, белки, жиры и углеводы. Выбери ресторан ниже чтобы начать."
         )
+
+    # Аналитика: существующий пользователь зашёл по UTM-ссылке
+    source = user_pending_source.pop(user_id, None)
+    if source:
+        log_event(user_id, 'bot_start', {'is_new': False, 'source': source})
 
     send_main_menu(chat_id)
 
@@ -224,8 +279,18 @@ def agreement_handler(call):
             "калории, белки, жиры и углеводы. Выбери ресторан ниже чтобы начать."
         )
         user_greeted.add(user_id)
-        send_main_menu(chat_id)
+
+        # Аналитика: новый пользователь
+        source = user_pending_source.pop(user_id, None)
+        if source:
+            # UTM известен — логируем сразу, вопрос не задаём
+            log_event(user_id, 'bot_start', {'is_new': True, 'source': source})
+            send_main_menu(chat_id)
+        else:
+            # Спрашиваем откуда узнали о боте
+            _ask_source(chat_id, user_id)
     else:
+        user_pending_source.pop(user_id, None)  # очищаем UTM — пользователь отказался
         bot.send_message(chat_id, "❌ Без принятия соглашения бот недоступен.")
 
 
@@ -287,9 +352,9 @@ def add_to_cart(user_id, dish_name, restaurant):
         conn.commit()
         return f"✅ {dish_name} ({restaurant}) добавлен в корзину!"
 
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        print("add_to_cart error:", e)
+        logger.exception("add_to_cart: ошибка для user %s, блюдо %r", user_id, dish_name)
         return "❌ Ошибка при добавлении блюда"
     finally:
         cur.close()
@@ -342,10 +407,10 @@ def add_to_cart_by_id(user_id, dish_id):
         conn.commit()
         return f"✅ {dish_name} ({restaurant_name}) добавлен в корзину!"
 
-    except Exception as e:
+    except Exception:
         if conn:
             conn.rollback()
-        print("Ошибка add_to_cart_by_id:", e)
+        logger.exception("add_to_cart_by_id: ошибка для user %s, dish_id %s", user_id, dish_id)
         return "❌ Ошибка при добавлении блюда"
     finally:
         if cur:
@@ -404,6 +469,20 @@ def clear_cart(user_id):
     conn.commit()
     cursor.close()
     conn.close()
+
+
+def get_cart_count(user_id) -> int:
+    """Возвращает суммарное количество позиций (единиц товара) в корзине."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT COALESCE(SUM(quantity), 0) FROM cart_items WHERE user_id = %s",
+        (user_id,)
+    )
+    count = cur.fetchone()[0]
+    cur.close()
+    conn.close()
+    return int(count)
 
 
 def _send_cart(chat_id, user_id):
@@ -808,38 +887,40 @@ def _send_top_by_restaurant(chat_id, user_id, offset=0):
         bot.send_message(chat_id, "❌ Сначала выберите цель")
         return
 
-    order_map = {
-        "ratio":   "(protein * 4.0) / NULLIF(kcal, 0) DESC",
+    # Whitelist criterion — никакие значения из callback_data не попадают в SQL
+    if criterion not in ALLOWED_CRITERIA:
+        logger.warning("_send_top_by_restaurant: недопустимый criterion %r от user %s", criterion, user_id)
+        bot.send_message(chat_id, "❌ Неизвестный критерий")
+        return
+
+    # Статические ORDER BY фразы — никогда не формируются из пользовательских данных
+    _ORDER_SQL = {
+        "ratio":   "( protein * 4.0 ) / NULLIF(kcal, 0) DESC",
         "protein": "protein DESC",
         "kcal":    "kcal ASC",
         "fat":     "fat ASC",
         "carbs":   "carbs ASC",
     }
-    order = order_map.get(criterion)
-    if not order:
-        bot.send_message(chat_id, "❌ Неизвестный критерий")
-        return
+    order_clause = _ORDER_SQL[criterion]   # ключ уже проверен выше
 
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute(f"""
-        SELECT id, dish, kcal, protein, fat, carbs
-        FROM dishes
-        WHERE restaurant = %s AND sectionid <> 9 AND sectionid <> 10
-          AND kcal > 0
-        ORDER BY {order}
-        LIMIT 5 OFFSET %s
-    """, (restaurant_name, offset))
+    # Используем %s для всех пользовательских параметров; order_clause — статическая строка
+    base_where = (
+        "WHERE restaurant = %s AND sectionid <> 9 AND sectionid <> 10 AND kcal > 0"
+    )
+    cur.execute(
+        f"SELECT id, dish, kcal, protein, fat, carbs FROM dishes {base_where} "
+        f"ORDER BY {order_clause} LIMIT 5 OFFSET %s",
+        (restaurant_name, offset),
+    )
     dishes = cur.fetchall()
 
     # Проверяем есть ли следующая страница
-    cur.execute(f"""
-        SELECT id FROM dishes
-        WHERE restaurant = %s AND sectionid <> 9 AND sectionid <> 10
-          AND kcal > 0
-        ORDER BY {order}
-        LIMIT 1 OFFSET %s
-    """, (restaurant_name, offset + 5))
+    cur.execute(
+        f"SELECT id FROM dishes {base_where} ORDER BY {order_clause} LIMIT 1 OFFSET %s",
+        (restaurant_name, offset + 5),
+    )
     has_next = cur.fetchone() is not None
     cur.close()
     conn.close()
@@ -1074,14 +1155,56 @@ def handle_browse_menu_text_input(message):
         send_browse_restaurant_picker(message.chat.id)
 
 
+# ─── ИСТОЧНИК ТРАФИКА (АНАЛИТИКА) ─────────────────────────────────────────────
+
+def _ask_source(chat_id, user_id):
+    """Показывает новому пользователю вопрос «Как узнали о боте?»."""
+    markup = types.InlineKeyboardMarkup()
+    markup.row(
+        types.InlineKeyboardButton("Instagram",    callback_data="src|instagram"),
+        types.InlineKeyboardButton("От врача",     callback_data="src|doctor"),
+    )
+    markup.row(
+        types.InlineKeyboardButton("От друга",     callback_data="src|friend"),
+        types.InlineKeyboardButton("Фитнес/спорт", callback_data="src|fitness"),
+    )
+    markup.row(
+        types.InlineKeyboardButton("Другое",       callback_data="src|other"),
+    )
+    bot.send_message(chat_id, "Как вы узнали о боте? 🤔", reply_markup=markup)
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("src|"))
+def source_handler(call):
+    bot.answer_callback_query(call.id)
+    user_id = call.from_user.id
+    chat_id = call.message.chat.id
+    raw_source = call.data.split("|", 1)[1]
+    source = raw_source if raw_source in ALLOWED_SOURCES else "other"
+    log_event(user_id, 'bot_start', {'is_new': True, 'source': source})
+    send_main_menu(chat_id)
+
+
 # ─── ГЛАВНЫЙ CALLBACK ХЕНДЛЕР ─────────────────────────────────────────────────
 
-@bot.callback_query_handler(func=lambda c: True)
+def _is_main_callback(c):
+    """Фильтр для главного хендлера — исключает callbacks, у которых есть свои хендлеры."""
+    d = c.data or ""
+    return (
+        d not in ("agree_yes", "agree_no")  # agreement_handler
+        and not d.startswith("src|")         # source_handler
+    )
+
+
+@bot.callback_query_handler(func=_is_main_callback)
 def callback_message(callback):
     bot.answer_callback_query(callback.id)
     user_id = callback.from_user.id
     data = callback.data
     chat_id = callback.message.chat.id
+
+    # ── Защита: неизвестные callback_data тихо отбрасываем ───────────────────
+    # (пользователь может прислать произвольный payload через Telegram API)
 
     # ── Выбор ресторана из главного меню ──────────────────────────────────────
     if data in RESTAURANT_MAP:
@@ -1091,17 +1214,30 @@ def callback_message(callback):
 
     # ── Просмотр меню ресторана ───────────────────────────────────────────────
     elif data == "browse_menu":
+        log_event(user_id, 'feature_used', {'feature': 'menu_browse'})
         user_state[user_id] = "WAIT_BROWSE_RESTAURANT"
         send_browse_restaurant_picker(chat_id, callback.message.message_id)
 
     elif data.startswith("bmenu_rest|"):
         rest_key = data.split("|", 1)[1]
+        if rest_key not in ALLOWED_REST_KEYS:
+            return
+        log_event(user_id, 'restaurant_view', {
+            'restaurant': RESTAURANT_MAP.get(rest_key, rest_key),
+            'section': 'all',
+        })
         send_browse_sections(chat_id, rest_key, callback.message.message_id)
 
     elif data.startswith("bmenu_sec|"):
         # bmenu_sec|rest_key|section_id
         parts = data.split("|", 2)
+        if len(parts) != 3:
+            return
         _, rest_key, sec_id = parts
+        if rest_key not in ALLOWED_REST_KEYS:
+            return
+        if not sec_id.isdigit():
+            return
         restaurant_name = RESTAURANT_MAP.get(rest_key, rest_key)
 
         conn = get_conn()
@@ -1120,6 +1256,11 @@ def callback_message(callback):
         cur.close()
         conn.close()
 
+        log_event(user_id, 'restaurant_view', {
+            'restaurant': restaurant_name,
+            'section': section_name,
+        })
+
         # Сбрасываем step_handler чтобы ввод числа шёл в handle_numeric_input
         bot.clear_step_handler_by_chat_id(chat_id)
         user_state[user_id] = "WAIT_DISH_ID"
@@ -1128,6 +1269,8 @@ def callback_message(callback):
 
     elif data.startswith("bmenu_all|"):
         rest_key = data.split("|", 1)[1]
+        if rest_key not in ALLOWED_REST_KEYS:
+            return
         restaurant_name = RESTAURANT_MAP.get(rest_key, rest_key)
 
         conn = get_conn()
@@ -1151,6 +1294,7 @@ def callback_message(callback):
 
     # ── История ───────────────────────────────────────────────────────────────
     elif data == "history":
+        log_event(user_id, 'feature_used', {'feature': 'history'})
         show_history(callback)
 
     # ── Назад в главное меню ──────────────────────────────────────────────────
@@ -1161,6 +1305,9 @@ def callback_message(callback):
     # ── Назад в тот же ресторан (с карточки блюда → ввод блюда того же ресторана)
     elif data.startswith("back_rest|"):
         rest_key = data.split("|", 1)[1]
+        if rest_key not in ALLOWED_REST_KEYS:
+            user_state[user_id] = None  # сбрасываем состояние даже при невалидном ключе
+            return
         restaurant_name = RESTAURANT_MAP.get(rest_key)
         if restaurant_name:
             user_last_restaurant[user_id] = restaurant_name
@@ -1173,6 +1320,8 @@ def callback_message(callback):
     # ── Карточка блюда ────────────────────────────────────────────────────────
     elif data.startswith("dish|"):
         _, dishes_id = data.split("|", 1)
+        if not dishes_id.isdigit():
+            return
         dishes_id = int(dishes_id)
 
         conn = get_conn()
@@ -1208,10 +1357,13 @@ def callback_message(callback):
 
     # ── Корзина ───────────────────────────────────────────────────────────────
     elif data == "show_cart":
+        log_event(user_id, 'feature_used', {'feature': 'cart'})
         _send_cart(chat_id, user_id)
 
     elif data.startswith("add_dish_to_cart|"):
         _, dishes_id = data.split("|", 1)
+        if not dishes_id.isdigit():
+            return
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("SELECT dish, restaurant FROM dishes WHERE id = %s", (dishes_id,))
@@ -1221,6 +1373,12 @@ def callback_message(callback):
         if result:
             dish_name, restaurant_name = result
             msg = add_to_cart(user_id, dish_name, restaurant_name)
+            cart_size = get_cart_count(user_id)
+            log_event(user_id, 'cart_add', {
+                'dish_id': int(dishes_id),
+                'restaurant': restaurant_name,
+                'cart_size': cart_size,
+            })
             # Подсказка про корзину — только первый раз
             if user_id not in user_cart_hinted:
                 user_cart_hinted.add(user_id)
@@ -1323,10 +1481,10 @@ def callback_message(callback):
                         "Удобно если заказываешь несколько позиций."
                     )
                 bot.send_message(chat_id, f"✅ {name} добавлен в корзину!")
-            except Exception as e:
+            except Exception:
                 conn.rollback()
+                logger.exception("add_drink_to_cart: ошибка для user %s, напиток %r", user_id, name)
                 bot.send_message(chat_id, "❌ Ошибка при добавлении напитка")
-                print("add_drink_to_cart error:", e)
             finally:
                 cur.close()
                 conn.close()
@@ -1347,6 +1505,7 @@ def callback_message(callback):
 
     # ── Подбор по цели (шаг 1 — выбор цели) ─────────────────────────────────
     elif data == "cats":
+        log_event(user_id, 'feature_used', {'feature': 'goal'})
         markup = types.InlineKeyboardMarkup()
         markup.row(
             types.InlineKeyboardButton("💪 Больше белка",              callback_data="goal|protein"),
@@ -1371,6 +1530,8 @@ def callback_message(callback):
     # ── Шаг 2 — выбрана цель, выбираем где искать ────────────────────────────
     elif data.startswith("goal|"):
         criterion = data.split("|")[1]
+        if criterion not in ALLOWED_CRITERIA:
+            return
         user_goal[user_id] = criterion
 
         markup = types.InlineKeyboardMarkup()
@@ -1464,6 +1625,8 @@ def callback_message(callback):
     # ── Подбор по цели прямо из ресторана (шаг 1 — цель) ─────────────────────
     elif data.startswith("goal_rest|"):
         rest_key = data.split("|", 1)[1]
+        if rest_key not in ALLOWED_REST_KEYS:
+            return
         user_restaurant[user_id] = rest_key
         rest_name = RESTAURANT_MAP.get(rest_key, rest_key)
 
@@ -1490,6 +1653,8 @@ def callback_message(callback):
     # ── Шаг 4 — выбор критерия по категории ──────────────────────────────────
     elif data.startswith("cat|"):
         category = data.split("|")[1]
+        # Разрешаем только секции, которые реально есть в БД — дополнительную
+        # защиту обеспечивает параметризованный запрос "SELECT id FROM sections"
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("SELECT id FROM sections WHERE name = %s", (category,))
@@ -1529,15 +1694,24 @@ def callback_message(callback):
 
     # ── Пагинация топа по категории ──────────────────────────────────────────
     elif data.startswith("top_cat_page|"):
-        _, criterion, offset_str = data.split("|")
+        parts = data.split("|")
+        if len(parts) != 3:
+            return
+        _, criterion, offset_str = parts
+        if criterion not in ALLOWED_CRITERIA or not offset_str.isdigit():
+            return
         offset = int(offset_str)
-        # Восстанавливаем user_goal для навигации назад
         user_goal[user_id] = criterion
         _send_top_by_category(chat_id, user_id, criterion, offset)
 
     # ── Пагинация топа по ресторану ───────────────────────────────────────────
     elif data.startswith("top_rest_page|"):
-        _, criterion, offset_str = data.split("|")
+        parts = data.split("|")
+        if len(parts) != 3:
+            return
+        _, criterion, offset_str = parts
+        if criterion not in ALLOWED_CRITERIA or not offset_str.isdigit():
+            return
         offset = int(offset_str)
         user_goal[user_id] = criterion
         _send_top_by_restaurant(chat_id, user_id, offset)
@@ -1545,12 +1719,17 @@ def callback_message(callback):
     # ── Топ-5 по категории ────────────────────────────────────────────────────
     elif data.startswith("sort|"):
         criterion = data.split("|")[1]
+        if criterion not in ALLOWED_CRITERIA:
+            return
         user_goal[user_id] = criterion
+        log_event(user_id, 'goal_search', {'goal': criterion, 'restaurant': 'by_category'})
         _send_top_by_category(chat_id, user_id, criterion)
 
     # ── Шаг 4 — выбор ресторана для подбора по цели ──────────────────────────
     elif data.startswith("rest|"):
         restaurant = data.split("|")[1]
+        if restaurant not in ALLOWED_REST_KEYS:
+            return
         user_restaurant[user_id] = restaurant
         criterion = user_goal.get(user_id)
 
@@ -1581,7 +1760,12 @@ def callback_message(callback):
     # ── Топ-5 по ресторану ────────────────────────────────────────────────────
     elif data.startswith("sort_rest|"):
         criterion = data.split("|")[1]
+        if criterion not in ALLOWED_CRITERIA:
+            return
         user_goal[user_id] = criterion
+        restaurant_slug = user_restaurant.get(user_id)
+        rest_name_for_log = RESTAURANT_MAP.get(restaurant_slug, restaurant_slug or 'unknown')
+        log_event(user_id, 'goal_search', {'goal': criterion, 'restaurant': rest_name_for_log})
         _send_top_by_restaurant(chat_id, user_id)
 
 
@@ -1703,61 +1887,59 @@ def handle_text(message):
 
 def delete_dish(message, user_id):
     """Удаляет блюдо из корзины. Вызывается из handle_numeric_input после валидации."""
-    conn = get_conn()
-    cur = conn.cursor()
-
-    parts = message.text.strip().split()
-    item_number, qty_to_remove = int(parts[0]), int(parts[1])
+    # Повторная проверка входных данных (функция может вызываться из разных мест)
+    try:
+        parts = message.text.strip().split()
+        item_number = int(parts[0])
+        qty_to_remove = int(parts[1])
+    except (IndexError, ValueError):
+        bot.send_message(message.chat.id, "❌ Некорректный ввод")
+        return
 
     if qty_to_remove < 1:
         bot.send_message(message.chat.id, "❌ Количество должно быть минимум 1")
-        cur.close()
-        conn.close()
         return
 
-    cur.execute("""
-        SELECT id, dish, restaurant FROM (
-            SELECT id, dish, restaurant,
-                   ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY id) AS rn
-            FROM cart_items WHERE user_id = %s
-        ) t WHERE rn = %s
-    """, (user_id, item_number))
-    res1 = cur.fetchone()
+    conn = None
+    cur = None
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
 
-    if not res1:
-        bot.send_message(message.chat.id, f"❌ В корзине нет блюда №{item_number}")
-        cur.close()
-        conn.close()
-        return
+        cur.execute("""
+            SELECT id, dish, restaurant FROM (
+                SELECT id, dish, restaurant,
+                       ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY id) AS rn
+                FROM cart_items WHERE user_id = %s
+            ) t WHERE rn = %s
+        """, (user_id, item_number))
+        res1 = cur.fetchone()
 
-    real_id, dish_name, restaurant_name = res1
+        if not res1:
+            bot.send_message(message.chat.id, f"❌ В корзине нет блюда №{item_number}")
+            return
 
-    # Ищем КБЖУ с учётом ресторана, блюдо могло быть удалено из БД
-    cur.execute(
-        "SELECT weight, kcal, protein, fat, carbs FROM dishes WHERE dish = %s AND restaurant = %s LIMIT 1",
-        (dish_name, restaurant_name)
-    )
-    res2 = cur.fetchone()
+        real_id, dish_name, restaurant_name = res1
 
-    if not res2:
-        # Блюдо удалено из базы — просто удаляем строку корзины
-        try:
+        # Ищем КБЖУ — блюдо могло быть удалено из основной таблицы
+        cur.execute(
+            "SELECT weight, kcal, protein, fat, carbs "
+            "FROM dishes WHERE dish = %s AND restaurant = %s LIMIT 1",
+            (dish_name, restaurant_name),
+        )
+        res2 = cur.fetchone()
+
+        if not res2:
+            # Блюдо удалено из БД — удаляем строку корзины целиком
             cur.execute(
                 "DELETE FROM cart_items WHERE id = %s AND user_id = %s",
-                (real_id, user_id)
+                (real_id, user_id),
             )
             conn.commit()
-        except Exception:
-            conn.rollback()
-        finally:
-            cur.close()
-            conn.close()
-        bot.send_message(message.chat.id, f"✅ Блюдо №{item_number} удалено из корзины!")
-        return
+            bot.send_message(message.chat.id, f"✅ Блюдо №{item_number} удалено из корзины!")
+            return
 
-    weight, kcal_p, protein_p, fat_p, carbs_p = res2
-
-    try:
+        weight, kcal_p, protein_p, fat_p, carbs_p = res2
         cur.execute("""
             UPDATE cart_items
             SET weight   = weight   - %s,
@@ -1775,23 +1957,25 @@ def delete_dish(message, user_id):
             qty_to_remove * float(protein_p),
             qty_to_remove * float(fat_p),
             qty_to_remove * float(carbs_p),
-            real_id, user_id
+            real_id, user_id,
         ))
         cur.execute(
             "DELETE FROM cart_items WHERE id = %s AND user_id = %s AND quantity <= 0",
-            (real_id, user_id)
+            (real_id, user_id),
         )
         conn.commit()
-    except Exception as e:
-        conn.rollback()
-        bot.send_message(message.chat.id, "❌ Ошибка при удалении блюда")
-        print("delete_dish error:", e)
-        return
-    finally:
-        cur.close()
-        conn.close()
+        bot.send_message(message.chat.id, f"✅ Блюдо №{item_number} удалено из корзины!")
 
-    bot.send_message(message.chat.id, f"✅ Блюдо №{item_number} удалено из корзины!")
+    except Exception:
+        logger.exception("delete_dish: ошибка для user %s, item %s", user_id, item_number)
+        if conn:
+            conn.rollback()
+        bot.send_message(message.chat.id, "❌ Ошибка при удалении блюда")
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
 
 
 # ─── НЕЧЁТКИЙ ПОИСК БЛЮДА ────────────────────────────────────────────────────
@@ -1871,6 +2055,24 @@ def dish_handling_func_1(message, restaurant):
     # Параллельно ищем в универсальных напитках — всегда, независимо от результата блюд
     drink_results = fuzzy_search_drink(dish_input)
 
+    # ── Аналитика поиска ──────────────────────────────────────────────────────
+    results_count = (
+        1 if exact_dish_id
+        else sum(1 for _, score, _ in best_matches if score >= 40) if added
+        else len(drink_results)
+    )
+    log_event(message.from_user.id, 'search_dish', {
+        'query': dish_input,
+        'restaurant': restaurant_name,
+        'results_count': results_count,
+    })
+    if results_count == 0:
+        log_event(message.from_user.id, 'zero_results', {
+            'query': dish_input,
+            'restaurant': restaurant_name,
+        })
+    # ─────────────────────────────────────────────────────────────────────────
+
     if exact_dish_id:
         cur.execute("""
             SELECT dish, restaurant, weight, kcal, protein, fat, carbs,
@@ -1942,4 +2144,10 @@ def dish_handling_func_1(message, restaurant):
 
 # ─── ЗАПУСК ───────────────────────────────────────────────────────────────────
 
-bot.polling(none_stop=True)
+def _polling_exception_handler(exc):
+    """Логирует все необработанные исключения во время polling вместо тихого проглатывания."""
+    logger.exception("Необработанное исключение в polling: %s", exc)
+
+
+# error_handler — корректный параметр pyTelegramBotAPI для перехвата ошибок в polling
+bot.polling(none_stop=True, error_handler=_polling_exception_handler)
