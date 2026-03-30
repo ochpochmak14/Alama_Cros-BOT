@@ -4,12 +4,11 @@ Quick test script to verify analytics is working.
 Logs sample events to SQLite and displays them.
 """
 
+import os
 import sqlite3
 import json
-from analytics_sqlite import log_event
+from analytics_sqlite import log_event, _DB_PATH
 from datetime import datetime
-
-_DB_PATH = "analytics.db"
 
 
 def test_logging():

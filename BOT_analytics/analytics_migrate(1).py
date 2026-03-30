@@ -21,9 +21,11 @@ import json
 import sqlite3
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 
-import gspread
+try:
+    import gspread
+except ImportError:
+    gspread = None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s — %(levelname)s — %(message)s")
 logger = logging.getLogger(__name__)
@@ -34,6 +36,11 @@ SHEET_HEADER = ["user_id", "event_name", "timestamp", "params"]
 
 def _get_client():
     """Return an authenticated gspread Client."""
+    if gspread is None:
+        raise EnvironmentError(
+            "gspread not installed. Run: pip install gspread"
+        )
+
     creds_json = os.getenv("GOOGLE_CREDS_JSON")
     if creds_json:
         creds_data = json.loads(creds_json)
