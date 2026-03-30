@@ -12,7 +12,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger("kbju_bot")
 
-bot = telebot.TeleBot(os.getenv("BOT_TOKEN"))
+class _BotExceptionHandler(telebot.ExceptionHandler):
+    """Перехватывает все исключения в polling — бот не падает, ошибка логируется."""
+    def handle(self, exception):
+        logger.exception("Необработанное исключение в боте: %s", exception)
+        return True  # True = исключение обработано, polling продолжается
+
+bot = telebot.TeleBot(
+    os.getenv("BOT_TOKEN"),
+    threaded=False,                          # один поток — нет гонок TTLCache
+    exception_handler=_BotExceptionHandler() # перехватывает все необработанные ошибки
+)
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # ─── ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ────────────────────────────────────────────────────
@@ -317,11 +327,18 @@ def add_to_cart(user_id, dish_name, restaurant):
     try:
         cur.execute("""
             SELECT weight, kcal, protein, fat, carbs
-            FROM dishes WHERE dish = %s AND restaurant = %s
+            FROM dishes WHERE dish = %s AND restaurant = %s AND is_published = TRUE
         """, (dish_name, restaurant))
         dish = cur.fetchone()
 
         if not dish:
+            # Проверяем: блюдо существует но снято с публикации — или его вообще нет
+            cur.execute(
+                "SELECT 1 FROM dishes WHERE dish = %s AND restaurant = %s LIMIT 1",
+                (dish_name, restaurant)
+            )
+            if cur.fetchone():
+                return "⏳ Это блюдо временно недоступно."
             return "❌ Такого блюда в этом ресторане нет!"
 
         weight, kcal, protein, fat, carbs = dish
@@ -369,7 +386,7 @@ def add_to_cart_by_id(user_id, dish_id):
         cur = conn.cursor()
         cur.execute("""
             SELECT dish, restaurant, weight, kcal, protein, fat, carbs
-            FROM dishes WHERE id = %s
+            FROM dishes WHERE id = %s AND is_published = TRUE
         """, (dish_id,))
         row = cur.fetchone()
 
@@ -754,9 +771,10 @@ def show_history(callback):
     markup = types.InlineKeyboardMarkup()
     conn = get_conn()
     cursor = conn.cursor()
+    found_any = False
     for dish, restaurant in history:
         cursor.execute(
-            "SELECT id FROM dishes WHERE dish = %s AND restaurant = %s",
+            "SELECT id FROM dishes WHERE dish = %s AND restaurant = %s AND is_published = TRUE",
             (dish, restaurant)
         )
         res = cursor.fetchone()
@@ -764,8 +782,15 @@ def show_history(callback):
             markup.add(types.InlineKeyboardButton(
                 f"{dish} ({restaurant})", callback_data=f"dish|{res[0]}"
             ))
+            found_any = True
     cursor.close()
     conn.close()
+
+    if not found_any:
+        bot.send_message(callback.message.chat.id, "📜 Блюда из вашей истории больше не доступны в меню.")
+        send_main_menu(callback.message.chat.id)
+        return
+
     markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data='back_1'))
     bot.send_message(callback.message.chat.id, "📜 История поиска:", reply_markup=markup)
 
@@ -776,17 +801,17 @@ def sort_by(section_id, criterion, limit=5, offset=0):
     conn = get_conn()
     cur = conn.cursor()
     if criterion == "protein":
-        cur.execute("SELECT id FROM dishes WHERE sectionid = %s ORDER BY protein DESC LIMIT %s OFFSET %s", (section_id, limit, offset))
+        cur.execute("SELECT id FROM dishes WHERE sectionid = %s AND is_published = TRUE ORDER BY protein DESC LIMIT %s OFFSET %s", (section_id, limit, offset))
     elif criterion == "fat":
-        cur.execute("SELECT id FROM dishes WHERE sectionid = %s ORDER BY fat ASC LIMIT %s OFFSET %s", (section_id, limit, offset))
+        cur.execute("SELECT id FROM dishes WHERE sectionid = %s AND is_published = TRUE ORDER BY fat ASC LIMIT %s OFFSET %s", (section_id, limit, offset))
     elif criterion == "carbs":
-        cur.execute("SELECT id FROM dishes WHERE sectionid = %s ORDER BY carbs ASC LIMIT %s OFFSET %s", (section_id, limit, offset))
+        cur.execute("SELECT id FROM dishes WHERE sectionid = %s AND is_published = TRUE ORDER BY carbs ASC LIMIT %s OFFSET %s", (section_id, limit, offset))
     elif criterion == "kcal":
-        cur.execute("SELECT id FROM dishes WHERE sectionid = %s AND kcal > 0 ORDER BY kcal ASC LIMIT %s OFFSET %s", (section_id, limit, offset))
+        cur.execute("SELECT id FROM dishes WHERE sectionid = %s AND is_published = TRUE AND kcal > 0 ORDER BY kcal ASC LIMIT %s OFFSET %s", (section_id, limit, offset))
     elif criterion == "ratio":
         cur.execute("""
             SELECT id FROM dishes
-            WHERE sectionid = %s AND kcal > 0
+            WHERE sectionid = %s AND is_published = TRUE AND kcal > 0
             ORDER BY protein * 4.0 / kcal DESC
             LIMIT %s OFFSET %s
         """, (section_id, limit, offset))
@@ -907,7 +932,7 @@ def _send_top_by_restaurant(chat_id, user_id, offset=0):
     cur = conn.cursor()
     # Используем %s для всех пользовательских параметров; order_clause — статическая строка
     base_where = (
-        "WHERE restaurant = %s AND sectionid <> 9 AND sectionid <> 10 AND kcal > 0"
+        "WHERE restaurant = %s AND sectionid <> 9 AND sectionid <> 10 AND kcal > 0 AND is_published = TRUE"
     )
     cur.execute(
         f"SELECT id, dish, kcal, protein, fat, carbs FROM dishes {base_where} "
@@ -1038,7 +1063,7 @@ def send_browse_sections(chat_id, rest_key, message_id=None):
         SELECT DISTINCT s.id, s.name
         FROM sections s
         JOIN dishes d ON d.sectionid = s.id
-        WHERE d.restaurant = %s
+        WHERE d.restaurant = %s AND d.is_published = TRUE
         ORDER BY s.id
     """, (restaurant_name,))
     sections = cur.fetchall()
@@ -1249,7 +1274,7 @@ def callback_message(callback):
         cur.execute("""
             SELECT id, dish, kcal, protein, fat, carbs
             FROM dishes
-            WHERE restaurant = %s AND sectionid = %s
+            WHERE restaurant = %s AND sectionid = %s AND is_published = TRUE
             ORDER BY dish
         """, (restaurant_name, sec_id))
         dishes = cur.fetchall()
@@ -1279,7 +1304,7 @@ def callback_message(callback):
             SELECT d.id, d.dish, d.kcal, d.protein, d.fat, d.carbs
             FROM dishes d
             JOIN sections s ON s.id = d.sectionid
-            WHERE d.restaurant = %s
+            WHERE d.restaurant = %s AND d.is_published = TRUE
             ORDER BY s.id, d.dish
         """, (restaurant_name,))
         dishes = cur.fetchall()
@@ -2001,7 +2026,7 @@ def dish_handling_func_1(message, restaurant):
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT dish FROM dishes WHERE restaurant = %s", (restaurant_name,))
+    cur.execute("SELECT dish FROM dishes WHERE restaurant = %s AND is_published = TRUE", (restaurant_name,))
     all_dishes = cur.fetchall()
 
     back_cb = _get_back_cb(restaurant_name)
@@ -2035,7 +2060,7 @@ def dish_handling_func_1(message, restaurant):
 
     for name, score, _ in best_matches:
         cur.execute(
-            "SELECT id FROM dishes WHERE restaurant = %s AND dish = %s",
+            "SELECT id FROM dishes WHERE restaurant = %s AND dish = %s AND is_published = TRUE",
             (restaurant_name, name)
         )
         res = cur.fetchone()
@@ -2144,10 +2169,6 @@ def dish_handling_func_1(message, restaurant):
 
 # ─── ЗАПУСК ───────────────────────────────────────────────────────────────────
 
-def _polling_exception_handler(exc):
-    """Логирует все необработанные исключения во время polling вместо тихого проглатывания."""
-    logger.exception("Необработанное исключение в polling: %s", exc)
-
-
-# error_handler — корректный параметр pyTelegramBotAPI для перехвата ошибок в polling
-bot.polling(none_stop=True, error_handler=_polling_exception_handler)
+# infinity_polling: автоматически перезапускается при сетевых ошибках
+# Все исключения перехватываются _BotExceptionHandler выше
+bot.infinity_polling(logger_level=logging.ERROR)
